@@ -7,3 +7,9 @@ A decentralized conversation service build as a Chord-inspired structured P2P ne
 - [ ] Create conversations and invite peers
 - [ ] Send/receive message
 - [ ] Evaluate efficiency and robustness
+    - [ ] consider which attacks we are vulnerable to
+
+## Nice to have / future work
+- [ ] Provide option for discovering conversations
+- [ ] Consider group keys 
+- [ ] Consider ways to share public keys
