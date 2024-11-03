@@ -193,7 +193,7 @@ func (p *Peer) Menu() {
 		fmt.Println("###################################")
 		fmt.Println("Choose an option: ")
 		fmt.Println("1. Print fingertable")
-		fmt.Println("2. Temp option 2")
+		fmt.Println("2. Print fingertable loud")
 		fmt.Println("3. Exit")
 
 		choice, _ := reader.ReadString('\n')
@@ -204,7 +204,7 @@ func (p *Peer) Menu() {
 			printFingertable(p.fingerTable)
 
 		case "2":
-			fmt.Println("Option 2 selected")
+			printFingertableLoud(p.fingerTable)
 
 		case "3":
 			fmt.Println("Exiting...")
@@ -216,62 +216,69 @@ func (p *Peer) Menu() {
 }
 
 // Find id's successor
-func (thisPeer *Peer) find_successor(id big.Int, successor *Peer) *Peer {
-	oldPredecessor := thisPeer.find_predecessor(id)
-	oldPredecessorAddr := oldPredecessor.IP + ":" + oldPredecessor.Port
+func (thisPeer *Peer) find_successor(id big.Int, thisPeerSuccessor *Peer) *Peer {
+	nPrime := thisPeer.find_predecessor(id)
 	successorRes := &Peer{}
-	if oldPredecessorAddr != thisPeer.IP+":"+thisPeer.Port {
-		thisPeer.sendMessage(oldPredecessorAddr, "GetSuccessor", nil, successorRes)
+	if nPrime.ID.Cmp(&thisPeer.ID) == 0 {
+		return thisPeerSuccessor
 	} else {
-		return successor
+		thisPeer.sendMessage(nPrime.IP+":"+nPrime.Port, "GetSuccessor", nil, successorRes)
 	}
 	return successorRes
 }
 
 // Find id's predecessor
 func (thisPeer *Peer) find_predecessor(id big.Int) *Peer {
-	currentClosest := thisPeer
-	// call to get n'.successor
-	currentClosestSuccessor := thisPeer.successor
-	if currentClosestSuccessor == nil {
+	// edge case 1: thisPeer only has itself in the fingertable
+	// -> return itself
+	// edge case 2: if n1 has closest_preceding_finger to be n2 and n2 has closest_preceding_finger to be n1
+	// -> return the first of n1 and n2 before `id`
+
+	// define n' = n
+	nPrime := thisPeer
+
+	// Set n'.successor
+	nPrimeSucc := thisPeer.successor
+	if nPrimeSucc == nil {
 		succ := &Peer{}
 		thisPeer.sendMessage(thisPeer.IP+":"+thisPeer.Port, "GetSuccessor", nil, succ)
-		currentClosestSuccessor = succ
+		nPrimeSucc = succ
 	}
-	for !isBetweenUpperIncl(&id, &currentClosest.ID, &currentClosestSuccessor.ID) {
-		currentClosestAddress := currentClosest.IP + ":" + currentClosest.Port
-		newClosest := &Peer{}
-		if currentClosestAddress == thisPeer.IP+":"+thisPeer.Port {
-			if len(thisPeer.fingerTable) == 0 {
-				return thisPeer
-			}
-			newClosest = thisPeer.closest_preceding_finger(id)
+
+	// while id \not\in (n', n'.successor]
+	for !isBetweenUpperIncl(&id, &nPrime.ID, &nPrimeSucc.ID) {
+		// get n'.closest_preceding_finger(id)
+		closestPrecFinger := &Peer{}
+		if nPrime.ID.Cmp(&thisPeer.ID) == 0 {
+			closestPrecFinger = thisPeer.closest_preceding_finger(id)
 		} else {
-			thisPeer.sendMessage(currentClosestAddress, "GetClosestPrecedingFinger", id, newClosest)
-		}
-		newCurrentClosestAddress := newClosest.IP + ":" + newClosest.Port
-		newClosestSuccessor := &Peer{}
-		if newCurrentClosestAddress == thisPeer.IP+":"+thisPeer.Port {
-			newClosestSuccessor = thisPeer.successor
-		} else {
-			thisPeer.sendMessage(newCurrentClosestAddress, "GetSuccessor", nil, newClosestSuccessor)
+			thisPeer.sendMessage(nPrime.IP+":"+nPrime.Port, "GetClosestPrecedingFinger", id, closestPrecFinger)
 		}
 
-		// If the ID's didn't change, we have to return to not loop forever.
-		if newClosest.ID.Cmp(&currentClosest.ID) == 0 &&
-			currentClosestSuccessor.ID.Cmp(&newClosestSuccessor.ID) == 0 {
-			// This if statement makes sure we return the correct of the two,
-			// respecting the modulo in the circle.
-			if id.Cmp(&currentClosestSuccessor.ID) < 0 {
-				return currentClosest
+		// Edge case 1
+		if closestPrecFinger.ID.Cmp(&thisPeer.ID) == 0 {
+			return thisPeer
+		}
+
+		// Update n'.successor
+		closestPrecFingerSucc := &Peer{}
+		thisPeer.sendMessage(closestPrecFinger.IP+":"+closestPrecFinger.Port, "GetSuccessor", nil, closestPrecFingerSucc)
+
+		// Edge case 2
+		if nPrime.ID.Cmp(&closestPrecFingerSucc.ID) == 0 && nPrime.ID.Cmp(&closestPrecFinger.ID) == 0 {
+			if isBetween(&id, &nPrime.ID, &nPrimeSucc.ID) {
+				return nPrime
 			} else {
-				return currentClosestSuccessor
+				return nPrimeSucc
 			}
 		}
-		currentClosest = newClosest
-		currentClosestSuccessor = newClosestSuccessor
+
+		// update n' and n'.successor
+		nPrime = closestPrecFinger
+		nPrimeSucc = closestPrecFingerSucc
 	}
-	return currentClosest
+	// return n'
+	return nPrime
 }
 
 // Return closes preceding finger
@@ -293,14 +300,6 @@ func (thisPeer *Peer) join(existingPeer *Peer) {
 		thisPeer.init_finger_table(existingPeer)
 		thisPeer.update_others()
 		fmt.Println("Peer", thisPeer.ID.String(), "Successfully joined the network.")
-	} else { // thisPeer is the only peer in the network
-		thisPeer.connMutex.Lock()
-		// think this is done earlier when the peer is created...
-		for i := 0; i < HASH_SIZE; i++ {
-			thisPeer.fingerTable[i].peer = *thisPeer
-		}
-		thisPeer.predecessor = thisPeer
-		thisPeer.connMutex.Unlock()
 	}
 }
 
@@ -326,8 +325,8 @@ func (thisPeer *Peer) init_finger_table(existingPeer *Peer) {
 			thisPeer.fingerTable[i+1].peer = thisPeer.fingerTable[i].peer
 		} else {
 			findSuccResp := &Peer{}
-			thisPeer.sendMessage(existingPeer.IP+":"+existingPeer.Port, "FindSuccessor", nextFinger, findSuccResp)
-			if !(isBetweenLowerIncl(&findSuccResp.ID, &nextFinger, &thisPeer.ID)) {
+			thisPeer.sendMessage(existingPeer.IP+":"+existingPeer.Port, "FindSuccessor", &nextFinger, findSuccResp)
+			if isBetweenLowerIncl(&nextFinger, &findSuccResp.ID, &thisPeer.ID) {
 				thisPeer.fingerTable[i+1].peer = *thisPeer
 			} else {
 				thisPeer.fingerTable[i+1].peer = *findSuccResp
@@ -339,24 +338,24 @@ func (thisPeer *Peer) init_finger_table(existingPeer *Peer) {
 
 // update all nodes whose finger tables should refer to thisPeer
 func (thisPeer *Peer) update_others() {
-	fmt.Println("updating others finger tables...")
 	otherAddress := ""
 	for i := 0; i < HASH_SIZE; i++ {
 		// compute id - 2^{i-1}
 		offsetI := new(big.Int).Exp(big.NewInt(2), big.NewInt(int64(i)), nil)
 		idMinusOffset := new(big.Int).Sub(&thisPeer.ID, offsetI)
+		idMinusOffset.Mod(idMinusOffset, new(big.Int).Exp(big.NewInt(2), big.NewInt(int64(HASH_SIZE)), nil))
 		p := thisPeer.find_predecessor(*idMinusOffset)
+
 		// call for p.update_finger_table(thisPeer, i)
-		if thisPeer.IP+":"+thisPeer.Port == otherAddress {
-			continue
-		}
 		otherAddress = p.IP + ":" + p.Port
 		updateFingerTableRpc := UpdateFingertableRpc{
 			Peer:  *thisPeer,
 			Index: i,
 		}
+		if thisPeer.IP+":"+thisPeer.Port == otherAddress {
+			continue
+		}
 		thisPeer.sendMessage(otherAddress, "UpdateFingertable", &updateFingerTableRpc, nil)
-		// time.Sleep(100 * time.Millisecond)
 	}
 }
 
@@ -367,16 +366,14 @@ func (thisPeer *Peer) update_finger_table(s *Peer, i int) {
 	if isBetweenLowerIncl(&s.ID, &thisPeer.ID, &thisPeer.fingerTable[i].peer.ID) ||
 		(thisPeer.ID.Cmp(&thisPeer.fingerTable[i].peer.ID) == 0 &&
 			isBetweenLowerIncl(&s.ID, &thisPeer.fingerTable[i].start, &thisPeer.ID)) {
-		fmt.Println("should update finger idx", i)
 		thisPeer.fingerTable[i].peer = *s
 		p := thisPeer.predecessor
 		updateFingerTableRpc := &UpdateFingertableRpc{Peer: *s, Index: i}
 		if p.IP+":"+p.Port != s.IP+":"+s.Port {
 			thisPeer.sendMessage(p.IP+":"+p.Port, "UpdateFingertable", updateFingerTableRpc, nil)
 		}
-	} else {
-		fmt.Println(&s.ID, &thisPeer.ID, &thisPeer.fingerTable[i].peer.ID)
 	}
+	thisPeer.successor = &thisPeer.fingerTable[0].peer
 }
 
 // Makes a new message with a given type
@@ -422,8 +419,15 @@ func printFingertable(fingers []Finger) {
 			}
 		}
 		if i == HASH_SIZE-1 {
-			fmt.Printf("%d-%d: port=%s id=%v\n", lastIdx, i, fingers[i-1].peer.Port, fingers[i-1].peer.ID.String())
+			fmt.Printf("-%d: port=%s id=%v\n", i, finger.peer.Port, finger.peer.ID.String())
 		}
+	}
+}
+
+func printFingertableLoud(fingers []Finger) {
+	fmt.Println("Printing fingertable...")
+	for i, _ := range fingers {
+		fmt.Printf("%d: (start: %v): port = %s id = %v\n", i, fingers[i].start.String(), fingers[i].peer.Port, fingers[i].peer.ID.String())
 	}
 }
 
@@ -472,8 +476,7 @@ func main() {
 		// connect to the network through the connectPeer
 		fmt.Println("Peer", peer.ID.String(), "is joining the network through", connectPeer.ID.String())
 		peer.join(connectPeer)
-	} else {
-		peer.join(nil)
 	}
+
 	peer.Menu()
 }
