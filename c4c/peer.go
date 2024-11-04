@@ -1,10 +1,5 @@
 package main
 
-/* TODO:
-* Make sure the ring order is correct after a new peer connects
-* Make sure the finger tables are updated when a new peer connects
- */
-
 import (
 	"bufio"
 	"crypto/sha1"
@@ -31,27 +26,10 @@ type Peer struct {
 	connMutex   sync.Mutex // mutex used for the finger table
 }
 
-type Finger struct {
-	peer      Peer
-	start     big.Int
-	interval  *Interval
-	successor big.Int
-}
-
-type Interval struct {
-	iStart big.Int
-	iEnd   big.Int
-}
-
 // Struct for a message
 type Message struct {
 	Type string
 	Data []byte
-}
-
-type UpdateFingertableRpc struct {
-	Peer  Peer
-	Index int
 }
 
 // Initializes a new peer
@@ -96,7 +74,7 @@ func (thisPeer *Peer) initializeFingerTable(id *big.Int) []Finger {
 		fingerTable[i].interval.iStart = fingerTable[i].start
 		fingerTable[i].interval.iEnd = *new(big.Int).Sub(&fingerTable[i+1].start, big.NewInt(1))
 	}
-	// wrap around
+	// wrap around (mod circle size)
 	fingerTable[HASH_SIZE-1].interval.iStart = fingerTable[HASH_SIZE-1].start
 	fingerTable[HASH_SIZE-1].interval.iEnd = *new(big.Int).Sub(&fingerTable[0].start, big.NewInt(1))
 
@@ -148,12 +126,16 @@ func (thisPeer *Peer) handleMessage(encoder *json.Encoder, message *Message) {
 	case "GetSuccessor":
 		encoder.Encode(thisPeer.successor)
 	case "GetPredecessor":
-		fmt.Println(thisPeer.Port, "returns pred:", thisPeer.predecessor.Port)
 		encoder.Encode(thisPeer.predecessor)
 	case "SetPredecessor":
 		var newPredecessor Peer
 		json.Unmarshal(message.Data, &newPredecessor)
 		thisPeer.predecessor = &newPredecessor
+		// if the successor has not been updated,
+		// then the new predecessor should also be the successor.
+		if thisPeer.successor.ID.Cmp(&thisPeer.ID) == 0 {
+			thisPeer.successor = &newPredecessor
+		}
 	case "GetFingertable":
 		encoder.Encode(&thisPeer.fingerTable)
 	case "GetClosestPrecedingFinger":
@@ -167,30 +149,19 @@ func (thisPeer *Peer) handleMessage(encoder *json.Encoder, message *Message) {
 		successor := thisPeer.find_successor(id, thisPeer.successor)
 		encoder.Encode(successor)
 	case "UpdateFingertable":
-		fmt.Println(thisPeer.Port + " is updating its fingertable")
 		var rpc UpdateFingertableRpc
 		json.Unmarshal(message.Data, &rpc)
 		thisPeer.update_finger_table(&rpc.Peer, rpc.Index)
 	}
 }
 
-// Connect to another peer
-func (thisPeer *Peer) GetConnection(otherAddr string) net.Conn {
-	conn, err := net.Dial("tcp", otherAddr)
-	if err != nil {
-		log.Printf("Error connecting to peer: %v", err)
-		return nil
-	}
-	return conn
-}
-
 // Menu to display options and take input
 func (p *Peer) Menu() {
 	reader := bufio.NewReader(os.Stdin)
 	for {
-		fmt.Println("\n###################################")
-		fmt.Println("##### Welcome to Chord4Convos #####")
-		fmt.Println("###################################")
+		fmt.Println("\n##################################")
+		fmt.Println("####### Welcome to Schorbe #######")
+		fmt.Println("##################################")
 		fmt.Println("Choose an option: ")
 		fmt.Println("1. Print fingertable")
 		fmt.Println("2. Print fingertable loud")
@@ -213,167 +184,6 @@ func (p *Peer) Menu() {
 			fmt.Println("Invalid option, please try again.")
 		}
 	}
-}
-
-// Find id's successor
-func (thisPeer *Peer) find_successor(id big.Int, thisPeerSuccessor *Peer) *Peer {
-	nPrime := thisPeer.find_predecessor(id)
-	successorRes := &Peer{}
-	if nPrime.ID.Cmp(&thisPeer.ID) == 0 {
-		return thisPeerSuccessor
-	} else {
-		thisPeer.sendMessage(nPrime.IP+":"+nPrime.Port, "GetSuccessor", nil, successorRes)
-	}
-	return successorRes
-}
-
-// Find id's predecessor
-func (thisPeer *Peer) find_predecessor(id big.Int) *Peer {
-	// edge case 1: thisPeer only has itself in the fingertable
-	// -> return itself
-	// edge case 2: if n1 has closest_preceding_finger to be n2 and n2 has closest_preceding_finger to be n1
-	// -> return the first of n1 and n2 before `id`
-
-	// define n' = n
-	nPrime := thisPeer
-
-	// Set n'.successor
-	nPrimeSucc := thisPeer.successor
-	if nPrimeSucc == nil {
-		succ := &Peer{}
-		thisPeer.sendMessage(thisPeer.IP+":"+thisPeer.Port, "GetSuccessor", nil, succ)
-		nPrimeSucc = succ
-	}
-
-	// while id \not\in (n', n'.successor]
-	for !isBetweenUpperIncl(&id, &nPrime.ID, &nPrimeSucc.ID) {
-		// get n'.closest_preceding_finger(id)
-		closestPrecFinger := &Peer{}
-		if nPrime.ID.Cmp(&thisPeer.ID) == 0 {
-			closestPrecFinger = thisPeer.closest_preceding_finger(id)
-		} else {
-			thisPeer.sendMessage(nPrime.IP+":"+nPrime.Port, "GetClosestPrecedingFinger", id, closestPrecFinger)
-		}
-
-		// Edge case 1
-		if closestPrecFinger.ID.Cmp(&thisPeer.ID) == 0 {
-			return thisPeer
-		}
-
-		// Update n'.successor
-		closestPrecFingerSucc := &Peer{}
-		thisPeer.sendMessage(closestPrecFinger.IP+":"+closestPrecFinger.Port, "GetSuccessor", nil, closestPrecFingerSucc)
-
-		// Edge case 2
-		if nPrime.ID.Cmp(&closestPrecFingerSucc.ID) == 0 && nPrime.ID.Cmp(&closestPrecFinger.ID) == 0 {
-			if isBetween(&id, &nPrime.ID, &nPrimeSucc.ID) {
-				return nPrime
-			} else {
-				return nPrimeSucc
-			}
-		}
-
-		// update n' and n'.successor
-		nPrime = closestPrecFinger
-		nPrimeSucc = closestPrecFingerSucc
-	}
-	// return n'
-	return nPrime
-}
-
-// Return closes preceding finger
-func (thisPeer *Peer) closest_preceding_finger(id big.Int) *Peer {
-	thisPeer.connMutex.Lock()
-	defer thisPeer.connMutex.Unlock()
-	for i := HASH_SIZE - 1; i >= 0; i-- {
-		fingerNode := thisPeer.fingerTable[i].peer
-		if isBetween(&fingerNode.ID, &thisPeer.ID, &id) {
-			return &fingerNode
-		}
-	}
-	return thisPeer
-}
-
-// `thisPeer` joins the network;
-func (thisPeer *Peer) join(existingPeer *Peer) {
-	if existingPeer != nil {
-		thisPeer.init_finger_table(existingPeer)
-		thisPeer.update_others()
-		fmt.Println("Peer", thisPeer.ID.String(), "Successfully joined the network.")
-	}
-}
-
-// initialize finger table of local node thisPeer
-func (thisPeer *Peer) init_finger_table(existingPeer *Peer) {
-	thisPeer.connMutex.Lock()
-	// call for finger[1].node = n'.find_successor(finger[1].start)
-	successor := &Peer{}
-	thisPeer.sendMessage(existingPeer.IP+":"+existingPeer.Port, "FindSuccessor",
-		&thisPeer.fingerTable[1].interval.iStart, successor)
-	thisPeer.fingerTable[0].peer = *successor
-	thisPeer.successor = successor
-	successorAddr := successor.IP + ":" + successor.Port
-	// call for thisPeer.predecessor = thisPeer.successor.predecessor
-	SuccPred := &Peer{}
-	thisPeer.sendMessage(successorAddr, "GetPredecessor", nil, SuccPred)
-	thisPeer.predecessor = SuccPred
-	// call for thisPeer.successor.predecessor = thisPeer
-	thisPeer.sendMessage(successorAddr, "SetPredecessor", thisPeer, nil)
-	for i := 0; i < HASH_SIZE-1; i++ {
-		nextFinger := thisPeer.fingerTable[i+1].start
-		if isBetweenLowerIncl(&nextFinger, &thisPeer.ID, &thisPeer.fingerTable[i].peer.ID) {
-			thisPeer.fingerTable[i+1].peer = thisPeer.fingerTable[i].peer
-		} else {
-			findSuccResp := &Peer{}
-			thisPeer.sendMessage(existingPeer.IP+":"+existingPeer.Port, "FindSuccessor", &nextFinger, findSuccResp)
-			if isBetweenLowerIncl(&nextFinger, &findSuccResp.ID, &thisPeer.ID) {
-				thisPeer.fingerTable[i+1].peer = *thisPeer
-			} else {
-				thisPeer.fingerTable[i+1].peer = *findSuccResp
-			}
-		}
-	}
-	thisPeer.connMutex.Unlock()
-}
-
-// update all nodes whose finger tables should refer to thisPeer
-func (thisPeer *Peer) update_others() {
-	otherAddress := ""
-	for i := 0; i < HASH_SIZE; i++ {
-		// compute id - 2^{i-1}
-		offsetI := new(big.Int).Exp(big.NewInt(2), big.NewInt(int64(i)), nil)
-		idMinusOffset := new(big.Int).Sub(&thisPeer.ID, offsetI)
-		idMinusOffset.Mod(idMinusOffset, new(big.Int).Exp(big.NewInt(2), big.NewInt(int64(HASH_SIZE)), nil))
-		p := thisPeer.find_predecessor(*idMinusOffset)
-
-		// call for p.update_finger_table(thisPeer, i)
-		otherAddress = p.IP + ":" + p.Port
-		updateFingerTableRpc := UpdateFingertableRpc{
-			Peer:  *thisPeer,
-			Index: i,
-		}
-		if thisPeer.IP+":"+thisPeer.Port == otherAddress {
-			continue
-		}
-		thisPeer.sendMessage(otherAddress, "UpdateFingertable", &updateFingerTableRpc, nil)
-	}
-}
-
-// if s is ith finger of thisPeer, update thisPeers' finger table with s
-func (thisPeer *Peer) update_finger_table(s *Peer, i int) {
-	// If s \in [n, finger[i].node)
-	// or if n = finger[i].node and s \in [finger[i].start, node)
-	if isBetweenLowerIncl(&s.ID, &thisPeer.ID, &thisPeer.fingerTable[i].peer.ID) ||
-		(thisPeer.ID.Cmp(&thisPeer.fingerTable[i].peer.ID) == 0 &&
-			isBetweenLowerIncl(&s.ID, &thisPeer.fingerTable[i].start, &thisPeer.ID)) {
-		thisPeer.fingerTable[i].peer = *s
-		p := thisPeer.predecessor
-		updateFingerTableRpc := &UpdateFingertableRpc{Peer: *s, Index: i}
-		if p.IP+":"+p.Port != s.IP+":"+s.Port {
-			thisPeer.sendMessage(p.IP+":"+p.Port, "UpdateFingertable", updateFingerTableRpc, nil)
-		}
-	}
-	thisPeer.successor = &thisPeer.fingerTable[0].peer
 }
 
 // Makes a new message with a given type
@@ -406,53 +216,14 @@ func (thisPeer *Peer) sendMessage(ip string, msgType string, data interface{}, r
 	}
 }
 
-func printFingertable(fingers []Finger) {
-	fmt.Println("Printing fingertable...")
-	lastIdx := 0
-	lastId := fingers[0].peer.ID
-	for i, finger := range fingers {
-		if finger.peer.ID.Cmp(&lastId) != 0 {
-			fmt.Printf("%d-%d: port=%s id=%v\n", lastIdx, i-1, fingers[i-1].peer.Port, fingers[i-1].peer.ID.String())
-			if i != HASH_SIZE-1 {
-				lastId = fingers[i].peer.ID
-				lastIdx = i
-			}
-		}
-		if i == HASH_SIZE-1 {
-			fmt.Printf("-%d: port=%s id=%v\n", i, finger.peer.Port, finger.peer.ID.String())
-		}
+// Connect to another peer
+func (thisPeer *Peer) GetConnection(otherAddr string) net.Conn {
+	conn, err := net.Dial("tcp", otherAddr)
+	if err != nil {
+		log.Printf("Error connecting to peer: %v", err)
+		return nil
 	}
-}
-
-func printFingertableLoud(fingers []Finger) {
-	fmt.Println("Printing fingertable...")
-	for i, _ := range fingers {
-		fmt.Printf("%d: (start: %v): port = %s id = %v\n", i, fingers[i].start.String(), fingers[i].peer.Port, fingers[i].peer.ID.String())
-	}
-}
-
-func isBetweenUpperIncl(num, lower, upper *big.Int) bool {
-	if upper.Cmp(lower) >= 0 { // not affected by modulo
-		return num.Cmp(lower) > 0 && num.Cmp(upper) <= 0
-	} else { // affected by modulo
-		return num.Cmp(lower) > 0 || num.Cmp(upper) <= 0
-	}
-}
-
-func isBetweenLowerIncl(num, lower, upper *big.Int) bool {
-	if upper.Cmp(lower) >= 0 { // not affected by modulo
-		return num.Cmp(lower) >= 0 && num.Cmp(upper) < 0
-	} else { // affected by modulo
-		return num.Cmp(lower) >= 0 || num.Cmp(upper) < 0
-	}
-}
-
-func isBetween(num, lower, upper *big.Int) bool {
-	if upper.Cmp(lower) >= 0 { // not affected by modulo
-		return num.Cmp(lower) > 0 && num.Cmp(upper) < 0
-	} else { // affected by modulo
-		return num.Cmp(lower) > 0 || num.Cmp(upper) < 0
-	}
+	return conn
 }
 
 func main() {
