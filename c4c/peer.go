@@ -208,13 +208,13 @@ func (p *Peer) Menu() {
 		case "5":
 			// TODO - allow both root and group name to be strings and not ids?
 			if len(strings.Split(args, " ")) < 2 {
-				fmt.Println("make sure to include the id of the root peer and group.")
-				fmt.Println("For instance \"5 1234/6789\".")
+				fmt.Println("make sure to include the adrress of the root peer and name of the group.")
+				fmt.Println("For instance \"5 localhost:xxxx/foo\".")
 				continue
 			}
 			ids := strings.Split(args, " ")[1]
 			if len(strings.Split(ids, "/")) < 2 {
-				fmt.Println("the peerId/groupId should have the form:\n 1234/5678")
+				fmt.Println("the <addr>/<group name> should have the form:\n localhost:xxxx/foo")
 				continue
 			}
 			p.joinGroup(strings.TrimSpace(ids))

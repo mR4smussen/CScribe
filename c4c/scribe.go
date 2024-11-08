@@ -1,10 +1,12 @@
 package main
 
 import (
-	"crypto/sha1"
 	"fmt"
 	"math/big"
+	"os"
+	"path/filepath"
 	"strings"
+	"time"
 )
 
 type group struct {
@@ -17,21 +19,22 @@ type joinRpc struct {
 	GroupId   big.Int // The ide of the group name
 	Forwarder *Peer   // The peer forwarding the message (to add to the branch)
 	Sender    *Peer   // The original sender of the message
+	GroupName string  // Just used for logging to the correct file
 }
 
 // Creates a group with an ID made from the name and n's ID.
-// TODO - make the ID be n's id extended with the hash of the name, not just the name
 func (n *Peer) create(name string) {
-	// Compute the ID for the name
-	hash := sha1.New()
-	hash.Write([]byte(name))
-	hashBytes := hash.Sum(nil)
-	ID := new(big.Int).SetBytes(hashBytes[:])
+	ID := hashString(name)
 	if n.groups[ID.String()] == nil {
 		n.groups[ID.String()] = &group{
 			children: []*Peer{},
 			root:     n,
 		}
+		logFile := filepath.Join("..", "logs", name+"_log.md")
+
+		os.WriteFile(logFile,
+			[]byte(
+				fmt.Sprintf("### Peer (%s) created the group: %s\n```mermaid\ngraph BT;\n", n.Port, name)), 0644)
 		fmt.Println("Group \""+name+"\" created with id ", ID.String())
 	} else {
 		fmt.Println("Group \""+name+"\" already exists with id ", ID.String())
@@ -42,10 +45,15 @@ func (n *Peer) create(name string) {
 // This method is called from the menu
 func (n *Peer) joinGroup(ID string) {
 	ids := strings.Split(ID, "/")
-	peerId, _ := new(big.Int).SetString(ids[0], 10)
-	groupId, _ := new(big.Int).SetString(ids[1], 10)
+	peerId := hashString(ids[0])
+	groupId := hashString(ids[1])
 	if peerId.Cmp(&n.ID) == 0 {
-		fmt.Println("You can't join to your own group.")
+		fmt.Println("You can't join your own group.")
+		return
+	}
+	if n.groups[groupId.String()] != nil {
+		fmt.Println("Seems you are already part of this group")
+		// TODO - when we add creds, we need to add these to the group here...
 		return
 	}
 
@@ -53,7 +61,6 @@ func (n *Peer) joinGroup(ID string) {
 		"created by peer", peerId.String())
 
 	bestFinger := n.bestFingerForLookup(peerId)
-	fmt.Println("best finger:", bestFinger.ID.String())
 	if bestFinger.ID.Cmp(&n.ID) == 0 {
 		// If n is the best peer for this lookup, then we check if n has the group.
 		// Note, this is not the same as joining your own group, since it might be that
@@ -61,7 +68,7 @@ func (n *Peer) joinGroup(ID string) {
 		if n.groups[groupId.String()] == nil {
 			fmt.Println("Seems you are the root, and have lost the group :(")
 		} else {
-			// do nothing? we already have the group... maybe only group members can be root?
+			fmt.Println("Seems you are already a member of this group")
 		}
 	} else { // Else we send a join message to the "best" finger.
 		joinRpc := joinRpc{
@@ -69,8 +76,9 @@ func (n *Peer) joinGroup(ID string) {
 			GroupId:   *groupId,
 			Forwarder: n,
 			Sender:    n,
+			GroupName: ids[1],
 		}
-		fmt.Println("Sending join", joinRpc, "to best peer:", bestFinger.Port)
+		fmt.Println("Trying to join group through", bestFinger.Port)
 		root := &Peer{}
 		n.sendMessage(bestFinger.IP+":"+bestFinger.Port,
 			"JoinGroup", &joinRpc, root)
@@ -78,13 +86,10 @@ func (n *Peer) joinGroup(ID string) {
 			children: []*Peer{},
 			root:     root,
 		}
+		glog(ids[1], fmt.Sprintf("	%s((%s))-->%s((%s));",
+			n.Port, n.Port, bestFinger.Port, bestFinger.Port))
 		fmt.Println("successfully joined new group with root on port", n.groups[groupId.String()].root.Port)
 	}
-
-	// TODO - make lookup on peerId:
-	// 1. find peer in fingertable furthest towards peerId or the successor of the peerId
-	// 2. send join message
-	// 3. ... check groups?
 }
 
 // Forward a join message
@@ -104,16 +109,20 @@ func (n *Peer) forwardJoin(rpc joinRpc) *Peer {
 				GroupId:   rpc.GroupId,
 				Forwarder: n,
 				Sender:    rpc.Sender,
+				GroupName: rpc.GroupName,
 			}
 			fmt.Println("Sending join", nextRpc, "to best peer:", bestFinger.Port)
 			root := &Peer{}
 			n.sendMessage(bestFinger.IP+":"+bestFinger.Port,
 				"JoinGroup", &nextRpc, root)
 
+			// Save the group
 			n.groups[groupId] = &group{
 				children: []*Peer{rpc.Forwarder},
 				root:     root,
 			}
+			glog(rpc.GroupName, fmt.Sprintf("	%s((%s))-->%s((%s));",
+				n.Port, n.Port, bestFinger.Port, bestFinger.Port))
 			return root
 		}
 	} else {
@@ -125,5 +134,24 @@ func (n *Peer) forwardJoin(rpc joinRpc) *Peer {
 		n.groups[groupId] = existingGroup
 		fmt.Println("Already part of the tree, returning the root...", n.groups[groupId].root.Port)
 		return n.groups[groupId].root
+	}
+}
+
+func glog(gname, msg string) {
+	logFile := filepath.Join("..", "logs", gname+"_log.md")
+	file, err := os.OpenFile(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		fmt.Println("opening log file", gname+"_log failed:\n", err)
+		return
+	}
+	defer file.Close()
+
+	// we keep trying to write to the file until we succeed.
+	for {
+		_, err = file.Write([]byte(msg + "\n"))
+		if err == nil {
+			break
+		}
+		time.Sleep(time.Second)
 	}
 }

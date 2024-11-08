@@ -1,9 +1,17 @@
 package main
 
 import (
+	"crypto/sha1"
 	"fmt"
 	"math/big"
 )
+
+func hashString(s string) *big.Int {
+	hash := sha1.New()
+	hash.Write([]byte(s))
+	hashBytes := hash.Sum(nil)
+	return new(big.Int).SetBytes(hashBytes[:])
+}
 
 func isBetween(num, lower, upper *big.Int) bool {
 	if upper.Cmp(lower) >= 0 { // not affected by modulo
