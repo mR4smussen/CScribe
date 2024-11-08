@@ -105,10 +105,15 @@ func (n *Peer) forwardJoin(rpc joinRpc) *Peer {
 				Forwarder: n,
 				Sender:    rpc.Sender,
 			}
-			fmt.Println("Sending join", nextRpc, "to best peer:", bestFinger.ID.String())
+			fmt.Println("Sending join", nextRpc, "to best peer:", bestFinger.Port)
 			root := &Peer{}
 			n.sendMessage(bestFinger.IP+":"+bestFinger.Port,
 				"JoinGroup", &nextRpc, root)
+
+			n.groups[groupId] = &group{
+				children: []*Peer{rpc.Sender},
+				root:     root,
+			}
 			return root
 		}
 	} else {
