@@ -111,7 +111,7 @@ func (n *Peer) forwardJoin(rpc joinRpc) *Peer {
 				"JoinGroup", &nextRpc, root)
 
 			n.groups[groupId] = &group{
-				children: []*Peer{rpc.Sender},
+				children: []*Peer{rpc.Forwarder},
 				root:     root,
 			}
 			return root
