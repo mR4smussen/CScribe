@@ -29,6 +29,16 @@ func isBetweenLowerIncl(num, lower, upper *big.Int) bool {
 	}
 }
 
+func (n *Peer) bestFingerForLookup(id *big.Int) *Peer {
+	for i := HASH_SIZE - 1; i >= 0; i-- {
+		currentBest := n.fingerTable[i]
+		if isBetweenUpperIncl(&n.fingerTable[i].peer.ID, &n.ID, id) {
+			return &currentBest.peer
+		}
+	}
+	return n
+}
+
 func printFingertable(fingers []Finger) {
 	fmt.Println("Printing fingertable...")
 	lastIdx := 0
