@@ -166,6 +166,10 @@ func (thisPeer *Peer) handleMessage(encoder *json.Encoder, message *Message) {
 		json.Unmarshal(message.Data, &rpc)
 		root := thisPeer.forwardJoin(rpc)
 		encoder.Encode(root)
+	case "Multicast":
+		var rpc multicastRpc
+		json.Unmarshal(message.Data, &rpc)
+		thisPeer.forwardMulticast(rpc)
 	}
 }
 
@@ -180,8 +184,9 @@ func (p *Peer) Menu() {
 		fmt.Println("1. Print fingertable")
 		fmt.Println("2. Print fingertable loud")
 		fmt.Println("3. Exit")
-		fmt.Println("4. Create group <name>")
-		fmt.Println("5. Join group <peerId/groupId>")
+		fmt.Println("4. Create group <group name>")
+		fmt.Println("5. Join group <root ip/group name>")
+		fmt.Println("6. send multicast <group name> <message>")
 
 		args, _ := reader.ReadString('\n')
 		choice := strings.Split(args, " ")[0]
@@ -206,7 +211,6 @@ func (p *Peer) Menu() {
 			name := strings.Split(args, " ")[1]
 			p.create(strings.TrimSpace(name))
 		case "5":
-			// TODO - allow both root and group name to be strings and not ids?
 			if len(strings.Split(args, " ")) < 2 {
 				fmt.Println("make sure to include the adrress of the root peer and name of the group.")
 				fmt.Println("For instance \"5 localhost:xxxx/foo\".")
@@ -218,6 +222,16 @@ func (p *Peer) Menu() {
 				continue
 			}
 			p.joinGroup(strings.TrimSpace(ids))
+		case "6":
+			if len(strings.Split(args, " ")) < 3 {
+				fmt.Println("make sure to include a group name and msg for the multicast.")
+				fmt.Println("For instance: 6 golf hello golf members")
+				continue
+			}
+			gname := strings.Split(args, " ")[1]
+			msgSlice := strings.Split(args, " ")[2:]
+			msg := strings.Join(msgSlice, " ")
+			p.sendMulticast(gname, strings.TrimSpace(msg))
 
 		default:
 			fmt.Println("Invalid option, please try again.")

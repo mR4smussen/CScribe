@@ -4,6 +4,9 @@ import (
 	"crypto/sha1"
 	"fmt"
 	"math/big"
+	"os"
+	"path/filepath"
+	"time"
 )
 
 func hashString(s string) *big.Int {
@@ -11,6 +14,26 @@ func hashString(s string) *big.Int {
 	hash.Write([]byte(s))
 	hashBytes := hash.Sum(nil)
 	return new(big.Int).SetBytes(hashBytes[:])
+}
+
+// Log a message to the group "gname"
+func glog(gname, msg string) {
+	logFile := filepath.Join("..", "logs", gname+"_log.md")
+	file, err := os.OpenFile(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		fmt.Println("opening log file", gname+"_log failed:\n", err)
+		return
+	}
+	defer file.Close()
+
+	// we keep trying to write to the file until we succeed.
+	for {
+		_, err = file.Write([]byte(msg + "\n"))
+		if err == nil {
+			break
+		}
+		time.Sleep(time.Second)
+	}
 }
 
 func isBetween(num, lower, upper *big.Int) bool {

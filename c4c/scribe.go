@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 )
 
 type group struct {
@@ -20,6 +19,12 @@ type joinRpc struct {
 	Forwarder *Peer   // The peer forwarding the message (to add to the branch)
 	Sender    *Peer   // The original sender of the message
 	GroupName string  // Just used for logging to the correct file
+}
+
+type multicastRpc struct {
+	GroupName string
+	Msg       string
+	Sender    *Peer
 }
 
 // Creates a group with an ID made from the name and n's ID.
@@ -43,8 +48,9 @@ func (n *Peer) create(name string) {
 
 // Use chord to send a join message to the peer in the ID
 // This method is called from the menu
-func (n *Peer) joinGroup(ID string) {
-	ids := strings.Split(ID, "/")
+// Note: currently each peer can not be in two groups with the same name.
+func (n *Peer) joinGroup(domain string) {
+	ids := strings.Split(domain, "/")
 	peerId := hashString(ids[0])
 	groupId := hashString(ids[1])
 	if peerId.Cmp(&n.ID) == 0 {
@@ -137,21 +143,34 @@ func (n *Peer) forwardJoin(rpc joinRpc) *Peer {
 	}
 }
 
-func glog(gname, msg string) {
-	logFile := filepath.Join("..", "logs", gname+"_log.md")
-	file, err := os.OpenFile(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		fmt.Println("opening log file", gname+"_log failed:\n", err)
+func (n *Peer) sendMulticast(gname, msg string) {
+	groupId := hashString(gname)
+	group := n.groups[groupId.String()]
+	if group == nil {
+		fmt.Println("You are not a member of", gname)
 		return
 	}
-	defer file.Close()
+	root := group.root
+	rpc := multicastRpc{
+		GroupName: gname,
+		Msg:       msg,
+		Sender:    n,
+	}
+	if root.ID.Cmp(&n.ID) == 0 {
+		// the root is sending the multicast.
+		n.forwardMulticast(rpc)
+	} else { // we ask the root to send the multicast
+		n.sendMessage(root.IP+":"+root.Port, "Multicast", &rpc, nil)
+	}
+}
 
-	// we keep trying to write to the file until we succeed.
-	for {
-		_, err = file.Write([]byte(msg + "\n"))
-		if err == nil {
-			break
-		}
-		time.Sleep(time.Second)
+func (n *Peer) forwardMulticast(rpc multicastRpc) {
+	groupId := hashString(rpc.GroupName)
+	group := n.groups[groupId.String()]
+	children := group.children
+	logMsg := fmt.Sprintf("(%s:%s): \"%s\" - %s", n.Port, rpc.GroupName, rpc.Msg, rpc.Sender.Port)
+	fmt.Println(logMsg)
+	for _, child := range children {
+		n.sendMessage(child.IP+":"+child.Port, "Multicast", &rpc, nil)
 	}
 }
