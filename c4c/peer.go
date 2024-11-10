@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"crypto/rsa"
 	"crypto/sha1"
 	"encoding/json"
 	"fmt"
@@ -25,7 +26,9 @@ type Peer struct {
 	successor   *Peer
 	predecessor *Peer
 	connMutex   sync.Mutex // mutex used for the finger table
-	groups      map[string]*group
+	groups      map[string]*Group
+	Pk          *rsa.PublicKey
+	sk          *rsa.PrivateKey
 }
 
 // Struct for a message
@@ -41,6 +44,7 @@ func NewPeer(IP, Port string) *Peer {
 	hash.Write([]byte(IP + ":" + Port))
 	hashBytes := hash.Sum(nil)
 	ID := new(big.Int).SetBytes(hashBytes[:])
+	sk := generateRSAKeys(4096)
 	peer := Peer{
 		ID:          *ID,
 		IP:          IP,
@@ -48,7 +52,9 @@ func NewPeer(IP, Port string) *Peer {
 		fingerTable: []Finger{},
 		successor:   &Peer{},
 		predecessor: &Peer{},
-		groups:      map[string]*group{},
+		groups:      map[string]*Group{},
+		Pk:          &sk.PublicKey,
+		sk:          sk,
 	}
 	fingerTable := peer.initializeFingerTable(ID)
 	peer.fingerTable = fingerTable
@@ -166,6 +172,13 @@ func (thisPeer *Peer) handleMessage(encoder *json.Encoder, message *Message) {
 		json.Unmarshal(message.Data, &rpc)
 		root := thisPeer.forwardJoin(rpc)
 		encoder.Encode(root)
+	case "GetKey":
+		var rpc requestKeyRpc
+		json.Unmarshal(message.Data, &rpc)
+		fmt.Println("got key request", rpc)
+		gKey := thisPeer.groups[rpc.GroupId.String()].groupKey
+		encryptedGroupKey := encryptRSA(gKey, rpc.Requestee.Pk)
+		encoder.Encode(encryptedGroupKey)
 	case "Multicast":
 		var rpc multicastRpc
 		json.Unmarshal(message.Data, &rpc)

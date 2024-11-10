@@ -8,9 +8,10 @@ import (
 	"strings"
 )
 
-type group struct {
+type Group struct {
 	children []*Peer
 	root     *Peer
+	groupKey []byte // the aes key and nonce used for this group
 }
 
 type joinRpc struct {
@@ -22,18 +23,25 @@ type joinRpc struct {
 }
 
 type multicastRpc struct {
-	GroupName string
-	Msg       string
-	Sender    *Peer
+	GroupName        string
+	EncryptedMessage []byte
+	Sender           *Peer
+}
+
+type requestKeyRpc struct {
+	GroupId   big.Int
+	Requestee *Peer
 }
 
 // Creates a group with an ID made from the name and n's ID.
 func (n *Peer) create(name string) {
 	ID := hashString(name)
 	if n.groups[ID.String()] == nil {
-		n.groups[ID.String()] = &group{
+		groupKey := generateAESKey()
+		n.groups[ID.String()] = &Group{
 			children: []*Peer{},
 			root:     n,
+			groupKey: groupKey,
 		}
 		logFile := filepath.Join("..", "logs", name+"_log.md")
 
@@ -57,9 +65,26 @@ func (n *Peer) joinGroup(domain string) {
 		fmt.Println("You can't join your own group.")
 		return
 	}
-	if n.groups[groupId.String()] != nil {
-		fmt.Println("Seems you are already part of this group")
-		// TODO - when we add creds, we need to add these to the group here...
+	group := n.groups[groupId.String()]
+	if group != nil {
+		if group.groupKey == nil {
+			fmt.Println("You are already part of the tree, but asking for the group key now.")
+			// Use the root to get the symmetric group key
+			requestRpc := requestKeyRpc{
+				GroupId:   *hashString(ids[1]),
+				Requestee: n,
+			}
+			encryptedGroupKey := &[]byte{}
+			n.sendMessage(group.root.IP+":"+group.root.Port, "GetKey", &requestRpc, encryptedGroupKey)
+			gKey := decryptRSA(*encryptedGroupKey, n.sk)
+			n.groups[groupId.String()] = &Group{
+				children: group.children,
+				root:     group.root,
+				groupKey: gKey,
+			}
+		} else {
+			fmt.Println("You are already part of this group.")
+		}
 		return
 	}
 
@@ -68,15 +93,11 @@ func (n *Peer) joinGroup(domain string) {
 
 	bestFinger := n.bestFingerForLookup(peerId)
 	if bestFinger.ID.Cmp(&n.ID) == 0 {
-		// If n is the best peer for this lookup, then we check if n has the group.
-		// Note, this is not the same as joining your own group, since it might be that
-		// you are the root of a group without being part of the group?
-		if n.groups[groupId.String()] == nil {
-			fmt.Println("Seems you are the root, and have lost the group :(")
-		} else {
-			fmt.Println("Seems you are already a member of this group")
-		}
+		// If n is the best peer for this lookup, then something is wrong
+		// since n doesn't know about the group
+		fmt.Println("Seems you are the root, and have lost the group :(")
 	} else { // Else we send a join message to the "best" finger.
+		// join the group tree (get the root)
 		joinRpc := joinRpc{
 			PeerId:    *peerId,
 			GroupId:   *groupId,
@@ -86,11 +107,20 @@ func (n *Peer) joinGroup(domain string) {
 		}
 		fmt.Println("Trying to join group through", bestFinger.Port)
 		root := &Peer{}
-		n.sendMessage(bestFinger.IP+":"+bestFinger.Port,
-			"JoinGroup", &joinRpc, root)
-		n.groups[groupId.String()] = &group{
+		n.sendMessage(bestFinger.IP+":"+bestFinger.Port, "JoinGroup", &joinRpc, root)
+
+		// Use the root to get the symmetric group key
+		requestRpc := requestKeyRpc{
+			GroupId:   *hashString(ids[1]),
+			Requestee: n,
+		}
+		encryptedGroupKey := &[]byte{}
+		n.sendMessage(root.IP+":"+root.Port, "GetKey", &requestRpc, encryptedGroupKey)
+		gKey := decryptRSA(*encryptedGroupKey, n.sk)
+		n.groups[groupId.String()] = &Group{
 			children: []*Peer{},
 			root:     root,
+			groupKey: gKey,
 		}
 		glog(ids[1], fmt.Sprintf("	%s((%s))-->%s((%s));",
 			n.Port, n.Port, bestFinger.Port, bestFinger.Port))
@@ -117,15 +147,15 @@ func (n *Peer) forwardJoin(rpc joinRpc) *Peer {
 				Sender:    rpc.Sender,
 				GroupName: rpc.GroupName,
 			}
-			fmt.Println("Sending join", nextRpc, "to best peer:", bestFinger.Port)
 			root := &Peer{}
 			n.sendMessage(bestFinger.IP+":"+bestFinger.Port,
 				"JoinGroup", &nextRpc, root)
 
-			// Save the group
-			n.groups[groupId] = &group{
+			// Join the group tree
+			n.groups[groupId] = &Group{
 				children: []*Peer{rpc.Forwarder},
 				root:     root,
+				groupKey: nil,
 			}
 			glog(rpc.GroupName, fmt.Sprintf("	%s((%s))-->%s((%s));",
 				n.Port, n.Port, bestFinger.Port, bestFinger.Port))
@@ -151,10 +181,11 @@ func (n *Peer) sendMulticast(gname, msg string) {
 		return
 	}
 	root := group.root
+	encryptedMessage := encryptAES([]byte(msg), group.groupKey)
 	rpc := multicastRpc{
-		GroupName: gname,
-		Msg:       msg,
-		Sender:    n,
+		GroupName:        gname,
+		EncryptedMessage: encryptedMessage,
+		Sender:           n,
 	}
 	if root.ID.Cmp(&n.ID) == 0 {
 		// the root is sending the multicast.
@@ -168,8 +199,13 @@ func (n *Peer) forwardMulticast(rpc multicastRpc) {
 	groupId := hashString(rpc.GroupName)
 	group := n.groups[groupId.String()]
 	children := group.children
-	logMsg := fmt.Sprintf("(%s:%s): \"%s\" - %s", n.Port, rpc.GroupName, rpc.Msg, rpc.Sender.Port)
-	fmt.Println(logMsg)
+
+	// If n is in the group (has the group key) - log the message
+	if group.groupKey != nil {
+		decryptedMessage := decryptAES(rpc.EncryptedMessage, group.groupKey)
+		logMsg := fmt.Sprintf("(%s:%s): \"%s\" - %s", n.Port, rpc.GroupName, decryptedMessage, rpc.Sender.Port)
+		fmt.Println(logMsg)
+	}
 	for _, child := range children {
 		n.sendMessage(child.IP+":"+child.Port, "Multicast", &rpc, nil)
 	}
