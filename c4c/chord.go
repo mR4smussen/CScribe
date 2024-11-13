@@ -8,6 +8,7 @@ https://dl.acm.org/doi/10.1145/964723.383071
 import (
 	"fmt"
 	"math/big"
+	"os"
 )
 
 type Finger struct {
@@ -114,7 +115,8 @@ func (n *Peer) join(nPrime *Peer) {
 	if nPrime != nil {
 		n.init_finger_table(nPrime)
 		n.update_others()
-		fmt.Println("Peer", n.ID.String(), "Successfully joined the network.")
+		fmt.Println("Peer ("+n.Port+")", n.ID.String(), "Successfully joined the network.")
+		os.WriteFile("peer_lock.txt", []byte("open"), 0644)
 	}
 }
 

@@ -1,9 +1,40 @@
 package main
 
 import (
+	"crypto/sha1"
 	"fmt"
 	"math/big"
+	"os"
+	"path/filepath"
+	"time"
 )
+
+func hashString(s string) *big.Int {
+	hash := sha1.New()
+	hash.Write([]byte(s))
+	hashBytes := hash.Sum(nil)
+	return new(big.Int).SetBytes(hashBytes[:])
+}
+
+// Log a message to the group "gname"
+func glog(gname, msg string) {
+	logFile := filepath.Join("..", "logs", gname+"_log.md")
+	file, err := os.OpenFile(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		fmt.Println("opening log file", gname+"_log failed:\n", err)
+		return
+	}
+	defer file.Close()
+
+	// we keep trying to write to the file until we succeed.
+	for {
+		_, err = file.Write([]byte(msg + "\n"))
+		if err == nil {
+			break
+		}
+		time.Sleep(time.Second)
+	}
+}
 
 func isBetween(num, lower, upper *big.Int) bool {
 	if upper.Cmp(lower) >= 0 { // not affected by modulo
@@ -27,6 +58,16 @@ func isBetweenLowerIncl(num, lower, upper *big.Int) bool {
 	} else { // affected by modulo
 		return num.Cmp(lower) >= 0 || num.Cmp(upper) < 0
 	}
+}
+
+func (n *Peer) bestFingerForLookup(id *big.Int) *Peer {
+	for i := HASH_SIZE - 1; i >= 0; i-- {
+		currentBest := n.fingerTable[i]
+		if isBetweenUpperIncl(&n.fingerTable[i].peer.ID, &n.ID, id) {
+			return &currentBest.peer
+		}
+	}
+	return n
 }
 
 func printFingertable(fingers []Finger) {

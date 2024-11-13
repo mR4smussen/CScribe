@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"crypto/rsa"
 	"crypto/sha1"
 	"encoding/json"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 )
 
 var HASH_SIZE = 160
@@ -24,6 +26,9 @@ type Peer struct {
 	successor   *Peer
 	predecessor *Peer
 	connMutex   sync.Mutex // mutex used for the finger table
+	groups      map[string]*Group
+	Pk          *rsa.PublicKey
+	sk          *rsa.PrivateKey
 }
 
 // Struct for a message
@@ -39,6 +44,7 @@ func NewPeer(IP, Port string) *Peer {
 	hash.Write([]byte(IP + ":" + Port))
 	hashBytes := hash.Sum(nil)
 	ID := new(big.Int).SetBytes(hashBytes[:])
+	sk := generateRSAKeys(4096)
 	peer := Peer{
 		ID:          *ID,
 		IP:          IP,
@@ -46,6 +52,9 @@ func NewPeer(IP, Port string) *Peer {
 		fingerTable: []Finger{},
 		successor:   &Peer{},
 		predecessor: &Peer{},
+		groups:      map[string]*Group{},
+		Pk:          &sk.PublicKey,
+		sk:          sk,
 	}
 	fingerTable := peer.initializeFingerTable(ID)
 	peer.fingerTable = fingerTable
@@ -107,16 +116,22 @@ func (thisPeer *Peer) Listen() {
 
 	for {
 		conn, _ := listener.Accept()
-		encoder := json.NewEncoder(conn)
-		decoder := json.NewDecoder(conn)
-		var message Message
-		err := decoder.Decode(&message)
-		if err != nil {
-			fmt.Printf("Got an error while decoding:%v\n", err)
-			continue
-		}
-		thisPeer.handleMessage(encoder, &message)
+		// should this be a go routine?
+		thisPeer.handleConn(conn)
 	}
+}
+
+func (thisPeer *Peer) handleConn(conn net.Conn) {
+	encoder := json.NewEncoder(conn)
+	decoder := json.NewDecoder(conn)
+	var message Message
+	err := decoder.Decode(&message)
+	if err != nil {
+		conn.Close()
+		fmt.Printf("Got an error while decoding:%v\n", err)
+	}
+	thisPeer.handleMessage(encoder, &message)
+	conn.Close()
 }
 
 func (thisPeer *Peer) handleMessage(encoder *json.Encoder, message *Message) {
@@ -152,6 +167,22 @@ func (thisPeer *Peer) handleMessage(encoder *json.Encoder, message *Message) {
 		var rpc UpdateFingertableRpc
 		json.Unmarshal(message.Data, &rpc)
 		thisPeer.update_finger_table(&rpc.Peer, rpc.Index)
+	case "JoinGroup":
+		var rpc joinRpc
+		json.Unmarshal(message.Data, &rpc)
+		root := thisPeer.forwardJoin(rpc)
+		encoder.Encode(root)
+	case "GetKey":
+		var rpc requestKeyRpc
+		json.Unmarshal(message.Data, &rpc)
+		fmt.Println("got key request", rpc)
+		gKey := thisPeer.groups[rpc.GroupId.String()].groupKey
+		encryptedGroupKey := encryptRSA(gKey, rpc.Requestee.Pk)
+		encoder.Encode(encryptedGroupKey)
+	case "Multicast":
+		var rpc multicastRpc
+		json.Unmarshal(message.Data, &rpc)
+		thisPeer.forwardMulticast(rpc)
 	}
 }
 
@@ -166,8 +197,12 @@ func (p *Peer) Menu() {
 		fmt.Println("1. Print fingertable")
 		fmt.Println("2. Print fingertable loud")
 		fmt.Println("3. Exit")
+		fmt.Println("4. Create group <group name>")
+		fmt.Println("5. Join group <root ip/group name>")
+		fmt.Println("6. send multicast <group name> <message>")
 
-		choice, _ := reader.ReadString('\n')
+		args, _ := reader.ReadString('\n')
+		choice := strings.Split(args, " ")[0]
 		choice = strings.TrimSpace(choice)
 
 		switch choice {
@@ -180,6 +215,37 @@ func (p *Peer) Menu() {
 		case "3":
 			fmt.Println("Exiting...")
 			os.Exit(0)
+		case "4":
+			if len(strings.Split(args, " ")) < 2 {
+				fmt.Println("make sure to include a name for the group.")
+				fmt.Println("For instance \"4 foo\"")
+				continue
+			}
+			name := strings.Split(args, " ")[1]
+			p.create(strings.TrimSpace(name))
+		case "5":
+			if len(strings.Split(args, " ")) < 2 {
+				fmt.Println("make sure to include the adrress of the root peer and name of the group.")
+				fmt.Println("For instance \"5 localhost:xxxx/foo\".")
+				continue
+			}
+			ids := strings.Split(args, " ")[1]
+			if len(strings.Split(ids, "/")) < 2 {
+				fmt.Println("the <addr>/<group name> should have the form:\n localhost:xxxx/foo")
+				continue
+			}
+			p.joinGroup(strings.TrimSpace(ids))
+		case "6":
+			if len(strings.Split(args, " ")) < 3 {
+				fmt.Println("make sure to include a group name and msg for the multicast.")
+				fmt.Println("For instance: 6 golf hello golf members")
+				continue
+			}
+			gname := strings.Split(args, " ")[1]
+			msgSlice := strings.Split(args, " ")[2:]
+			msg := strings.Join(msgSlice, " ")
+			p.sendMulticast(gname, strings.TrimSpace(msg))
+
 		default:
 			fmt.Println("Invalid option, please try again.")
 		}
@@ -217,25 +283,28 @@ func (thisPeer *Peer) sendMessage(ip string, msgType string, data interface{}, r
 }
 
 // Connect to another peer
+// try untill we have a connection or untill max tries
 func (thisPeer *Peer) GetConnection(otherAddr string) net.Conn {
-	conn, err := net.Dial("tcp", otherAddr)
-	if err != nil {
-		log.Printf("Error connecting to peer: %v", err)
-		return nil
+	maxTries := 10
+	tries := 0
+	for {
+		conn, err := net.Dial("tcp", otherAddr)
+		if err != nil && tries >= maxTries {
+			log.Printf("Error connecting to peer: %s %v", otherAddr, err)
+			return nil
+		} else if err == nil {
+			if tries > 0 {
+				fmt.Println("found connectiong!")
+			}
+			return conn
+		}
+		fmt.Println(thisPeer.Port, "wasn't able to connect to", otherAddr, "trying again...")
+		tries++
+		time.Sleep(500 * time.Millisecond)
 	}
-	return conn
 }
 
-func main() {
-	if len(os.Args) != 3 {
-		fmt.Println("Usage: go run peer.go [listen_port] [connect_port]")
-		fmt.Println("To create a new network, use \"0\" as the [connect_port]")
-		os.Exit(1)
-	}
-
-	listenPort := os.Args[1]
-	connectPort := os.Args[2]
-
+func startPeer(listenPort, connectPort string, isTest bool) {
 	peer := NewPeer("localhost", listenPort)
 	go peer.Listen()
 
@@ -245,9 +314,35 @@ func main() {
 		peer.sendMessage(connectAddr, "GetPeer", nil, connectPeer)
 
 		// connect to the network through the connectPeer
-		fmt.Println("Peer", peer.ID.String(), "is joining the network through", connectPeer.ID.String())
+		if !isTest {
+			fmt.Println("Peer", peer.ID.String(), "is joining the network through", connectPeer.ID.String())
+		}
 		peer.join(connectPeer)
 	}
 
-	peer.Menu()
+	if !isTest {
+		peer.Menu()
+	} else {
+		select {}
+	}
+}
+
+func main() {
+	if len(os.Args) < 3 {
+		fmt.Println("Usage: go run . [listen_port] [connect_port]")
+		fmt.Println("To create a new network, use \"0\" as the [connect_port].")
+		os.Exit(1)
+	}
+	if os.Args[1] == "test" {
+		if len(os.Args) == 3 {
+			fmt.Println("To run the tests, use: go run . test <amount> <firstPort>")
+			os.Exit(1)
+		}
+		test(os.Args[2], os.Args[3])
+		return
+	}
+
+	listenPort := os.Args[1]
+	connectPort := os.Args[2]
+	startPeer(listenPort, connectPort, false)
 }
