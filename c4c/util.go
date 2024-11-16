@@ -1,11 +1,13 @@
 package main
 
 import (
+	"bufio"
 	"crypto/sha1"
 	"fmt"
 	"math/big"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -93,4 +95,55 @@ func printFingertableLoud(fingers []Finger) {
 	for i, _ := range fingers {
 		fmt.Printf("%d: (start: %v): port = %s id = %v\n", i, fingers[i].start.String(), fingers[i].peer.Port, fingers[i].peer.ID.String())
 	}
+}
+
+// change a connection in the log file
+// remove the arrow going away from a, and adds an arrow from a to b
+func updateGraphLog(a, b string) error {
+	graphLogFile := filepath.Join("..", "logs", "network.md")
+
+	// Open the file
+	file, err := os.Open(graphLogFile)
+	if err != nil {
+		return fmt.Errorf("failed to open file: %w", err)
+	}
+	defer file.Close()
+
+	// Read all lines into a slice
+	var lines []string
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := scanner.Text()
+		// Skip the line starting with the node `a`
+		if strings.HasPrefix(line, fmt.Sprintf("\t%s(", a)) {
+			continue
+		}
+		lines = append(lines, line)
+	}
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("failed to read file: %w", err)
+	}
+
+	// Add the new line from `a` to `b`
+	lines = append(lines, fmt.Sprintf("\t%s((%s))-->%s((%s));", a, a, b, b))
+
+	// Write the updated lines back to the file
+	file, err = os.Create(graphLogFile)
+	if err != nil {
+		return fmt.Errorf("failed to reopen file for writing: %w", err)
+	}
+	defer file.Close()
+
+	writer := bufio.NewWriter(file)
+	for _, line := range lines {
+		_, err := writer.WriteString(line + "\n")
+		if err != nil {
+			return fmt.Errorf("failed to write to file: %w", err)
+		}
+	}
+	if err := writer.Flush(); err != nil {
+		return fmt.Errorf("failed to flush writer: %w", err)
+	}
+
+	return nil
 }

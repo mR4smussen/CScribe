@@ -10,6 +10,7 @@ import (
 	"math/big"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -117,7 +118,7 @@ func (thisPeer *Peer) Listen() {
 	for {
 		conn, _ := listener.Accept()
 		// should this be a go routine?
-		thisPeer.handleConn(conn)
+		go thisPeer.handleConn(conn)
 	}
 }
 
@@ -163,6 +164,10 @@ func (thisPeer *Peer) handleMessage(encoder *json.Encoder, message *Message) {
 		json.Unmarshal(message.Data, &id)
 		successor := thisPeer.find_successor(id, thisPeer.successor)
 		encoder.Encode(successor)
+	case "Notify":
+		var nPrime Peer
+		json.Unmarshal(message.Data, &nPrime)
+		thisPeer.notify(&nPrime)
 	case "UpdateFingertable":
 		var rpc UpdateFingertableRpc
 		json.Unmarshal(message.Data, &rpc)
@@ -183,6 +188,13 @@ func (thisPeer *Peer) handleMessage(encoder *json.Encoder, message *Message) {
 		var rpc multicastRpc
 		json.Unmarshal(message.Data, &rpc)
 		thisPeer.forwardMulticast(rpc)
+	case "DrawRing":
+		var senderPort string
+		json.Unmarshal(message.Data, &senderPort)
+		updateGraphLog(thisPeer.Port, thisPeer.successor.Port)
+		if senderPort != thisPeer.Port {
+			thisPeer.sendMessage(thisPeer.successor.IP+":"+thisPeer.successor.Port, "DrawRing", &senderPort, nil)
+		}
 	}
 }
 
@@ -199,7 +211,8 @@ func (p *Peer) Menu() {
 		fmt.Println("3. Exit")
 		fmt.Println("4. Create group <group name>")
 		fmt.Println("5. Join group <root ip/group name>")
-		fmt.Println("6. send multicast <group name> <message>")
+		fmt.Println("6. Send multicast <group name> <message>")
+		fmt.Println("7. Draw ring")
 
 		args, _ := reader.ReadString('\n')
 		choice := strings.Split(args, " ")[0]
@@ -245,6 +258,14 @@ func (p *Peer) Menu() {
 			msgSlice := strings.Split(args, " ")[2:]
 			msg := strings.Join(msgSlice, " ")
 			p.sendMulticast(gname, strings.TrimSpace(msg))
+		case "7":
+			logFile := filepath.Join("..", "logs", "network.md")
+			os.WriteFile(logFile,
+				[]byte(
+					fmt.Sprintf("```mermaid\ngraph BT;\n")), 0644)
+			if p.successor.ID.Cmp(&p.ID) != 0 {
+				p.sendMessage(p.successor.IP+":"+p.successor.Port, "DrawRing", &p.Port, nil)
+			}
 
 		default:
 			fmt.Println("Invalid option, please try again.")
@@ -309,15 +330,18 @@ func startPeer(listenPort, connectPort string, isTest bool) {
 	go peer.Listen()
 
 	if connectPort != "0" {
+		// Get n'
 		connectAddr := "localhost:" + connectPort
-		connectPeer := &Peer{}
-		peer.sendMessage(connectAddr, "GetPeer", nil, connectPeer)
+		nPrime := &Peer{}
+		peer.sendMessage(connectAddr, "GetPeer", nil, nPrime)
 
-		// connect to the network through the connectPeer
+		// connect to the network through n'
 		if !isTest {
-			fmt.Println("Peer", peer.ID.String(), "is joining the network through", connectPeer.ID.String())
+			fmt.Println("Peer", peer.ID.String(), "is joining the network through", nPrime.ID.String())
 		}
-		peer.join(connectPeer)
+		peer.join(nPrime)
+	} else {
+		peer.join(nil)
 	}
 
 	if !isTest {
