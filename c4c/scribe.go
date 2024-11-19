@@ -206,7 +206,14 @@ func (n *Peer) forwardMulticast(rpc multicastRpc) {
 		logMsg := fmt.Sprintf("(%s:%s): \"%s\" - %s", n.Port, rpc.GroupName, decryptedMessage, rpc.Sender.Port)
 		fmt.Println(logMsg)
 	}
-	for _, child := range children {
-		n.sendMessage(child.IP+":"+child.Port, "Multicast", &rpc, nil)
-	}
+	// Logfile
+    logFile := "counter" 
+    f, _ := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+    defer f.Close()
+
+    // Write to the file for each child
+    for _, child := range children {
+        f.WriteString(fmt.Sprintf("port %s forwarded a Multicast\n", n.Port))
+        n.sendMessage(child.IP+":"+child.Port, "Multicast", &rpc, nil)
+    }
 }

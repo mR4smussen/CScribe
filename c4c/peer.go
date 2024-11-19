@@ -17,6 +17,7 @@ import (
 
 var HASH_SIZE = 160
 
+
 // Struct for a peer in the network
 type Peer struct {
 	ID          big.Int
@@ -36,6 +37,8 @@ type Message struct {
 	Type string
 	Data []byte
 }
+
+
 
 // Initializes a new peer
 func NewPeer(IP, Port string) *Peer {
@@ -184,7 +187,27 @@ func (thisPeer *Peer) handleMessage(encoder *json.Encoder, message *Message) {
 		json.Unmarshal(message.Data, &rpc)
 		thisPeer.forwardMulticast(rpc)
 	}
+	
 }
+
+func countPeerMentions() map[string]int {
+	file, _ := os.Open("counter")
+		defer file.Close()
+
+		occurrences := make(map[string]int)
+		scanner := bufio.NewScanner(file)
+
+		for scanner.Scan() {
+			line := scanner.Text()
+			parts := strings.Fields(line)
+			if len(parts) >= 2 && strings.HasPrefix(parts[0], "port") {
+				port := parts[1]
+				occurrences[port]++
+			}
+		}
+		return occurrences
+}
+
 
 // Menu to display options and take input
 func (p *Peer) Menu() {
@@ -200,6 +223,7 @@ func (p *Peer) Menu() {
 		fmt.Println("4. Create group <group name>")
 		fmt.Println("5. Join group <root ip/group name>")
 		fmt.Println("6. send multicast <group name> <message>")
+		fmt.Println("7. get all logs")
 
 		args, _ := reader.ReadString('\n')
 		choice := strings.Split(args, " ")[0]
@@ -245,7 +269,12 @@ func (p *Peer) Menu() {
 			msgSlice := strings.Split(args, " ")[2:]
 			msg := strings.Join(msgSlice, " ")
 			p.sendMulticast(gname, strings.TrimSpace(msg))
-
+		case "7":
+			counts := countPeerMentions()
+			fmt.Println("Forward Multicast Counts:")
+			for port, count := range counts {
+				fmt.Printf("Port %s: %d forwards\n", port, count)
+			}
 		default:
 			fmt.Println("Invalid option, please try again.")
 		}
