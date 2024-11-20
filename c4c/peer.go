@@ -195,6 +195,34 @@ func (thisPeer *Peer) handleMessage(encoder *json.Encoder, message *Message) {
 		if senderPort != thisPeer.Port {
 			thisPeer.sendMessage(thisPeer.successor.IP+":"+thisPeer.successor.Port, "DrawRing", &senderPort, nil)
 		}
+	case "NotifyPredLeave": // used by thisPeer's pred to notify that they leave the network
+		var leaveRpc LeaveRpc
+		json.Unmarshal(message.Data, &leaveRpc)
+		if leaveRpc.Leaver.ID.Cmp(&thisPeer.predecessor.ID) == 0 { // was send by our pred.
+			// set our new pred to be the old predecessors pred
+			fmt.Println(leaveRpc.Leaver.Port, "notified their succ:", thisPeer.Port, "that they are leaving")
+			thisPeer.predecessor = &leaveRpc.NewConnection
+		}
+	case "NotifySuccLeave": // used by thisPeer's succ to notify that they leave the network
+		var leaveRpc LeaveRpc
+		json.Unmarshal(message.Data, &leaveRpc)
+		if leaveRpc.Leaver.ID.Cmp(&thisPeer.successor.ID) == 0 { // was send by our succ.
+			fmt.Println(leaveRpc.Leaver.Port, "notified their pred:", thisPeer.Port, "that they are leaving")
+			// set our new succ to be the old successors succ
+			thisPeer.successor = &leaveRpc.NewConnection
+			// Update all fingers before the new succ to point to the new succ
+			idx := 0
+			for {
+				if isBetween(&thisPeer.fingerTable[idx].start, &leaveRpc.NewConnection.ID, &thisPeer.ID) {
+					break
+				}
+				thisPeer.fingerTable[idx].peer = leaveRpc.NewConnection
+				idx = idx + 1
+				if idx >= HASH_SIZE { // edge case: newConnection should fill up entire table
+					break
+				}
+			}
+		}
 	}
 }
 
@@ -227,6 +255,22 @@ func (p *Peer) Menu() {
 
 		case "3":
 			fmt.Println("Exiting...")
+			if p.successor != nil && p.successor.ID.Cmp(&p.ID) != 0 {
+				// notify pred about leave
+				leaveRpc := LeaveRpc{
+					Leaver:        *p,
+					NewConnection: *p.successor,
+				}
+				p.sendMessage(p.predecessor.IP+":"+p.predecessor.Port, "NotifySuccLeave", &leaveRpc, nil)
+			}
+			if p.predecessor != nil && p.predecessor.ID.Cmp(&p.ID) != 0 {
+				// notify succ about leave
+				leaveRpc := LeaveRpc{
+					Leaver:        *p,
+					NewConnection: *p.predecessor,
+				}
+				p.sendMessage(p.successor.IP+":"+p.successor.Port, "NotifyPredLeave", &leaveRpc, nil)
+			}
 			os.Exit(0)
 		case "4":
 			if len(strings.Split(args, " ")) < 2 {
@@ -311,7 +355,7 @@ func (thisPeer *Peer) GetConnection(otherAddr string) net.Conn {
 	for {
 		conn, err := net.Dial("tcp", otherAddr)
 		if err != nil && tries >= maxTries {
-			log.Printf("Error connecting to peer: %s %v", otherAddr, err)
+			log.Printf("Error connecting to peer: %s %v, updating all fingers with this peer in it...", otherAddr, err)
 			return nil
 		} else if err == nil {
 			if tries > 0 {

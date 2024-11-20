@@ -30,6 +30,11 @@ type UpdateFingertableRpc struct {
 	Index int
 }
 
+type LeaveRpc struct {
+	Leaver        Peer
+	NewConnection Peer
+}
+
 // Ask node n to find id's successor
 func (n *Peer) find_successor(id big.Int, nSuccessor *Peer) *Peer {
 	nPrime := n.find_predecessor(id)
@@ -169,6 +174,10 @@ func (n *Peer) notify(nPrime *Peer) {
 // (the paper only uses this to argue correctness, not efficiency).
 func (n *Peer) fix_fingers() {
 	i := rand.Intn(HASH_SIZE)
+	n.fix_finger(i)
+}
+
+func (n *Peer) fix_finger(i int) {
 	succOfFingerI := *n.find_successor(n.fingerTable[i].start, n.successor)
 	n.fingerTable[i].peer = succOfFingerI
 	pickedIdx := i
@@ -257,6 +266,16 @@ func (n *Peer) update_others() {
 		}
 		n.sendMessage(otherAddress, "UpdateFingertable", &updateFingerTableRpc, nil)
 	}
+}
+
+func (n *Peer) update_finger_table_after_connection_issue(badAddress string) {
+	for idx, finger := range n.fingerTable {
+		// if the finger.peer has the bad address, use n.succ to update the finger
+		if finger.peer.IP+":"+finger.peer.Port == badAddress {
+			n.fix_finger(idx)
+		}
+	}
+
 }
 
 // if s is ith finger of n, update n's finger table with s
