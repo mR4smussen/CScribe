@@ -32,25 +32,25 @@ func test(amountString, firstPort string) {
 
 	for i := 1; i <= amount-1; i++ {
 		time.Sleep(500 * time.Millisecond)
-		for {
+		/* for {
 			lock, err := os.ReadFile(lockFile)
 			if err != nil {
 				fmt.Println("Error reading lock file:", err)
 				return
 			}
 
-			if string(lock) == "open" {
+			if string(lock) == "open" { */
 				os.WriteFile(lockFile, []byte("closed"), 0644)
 				listenPort := fmt.Sprintf("%d", startPort+i-1)
 				// TODO - use random port in [baseport, startPort+i-1)
 				connectPort := fmt.Sprintf("%d", basePort)
 				fmt.Println("Connecting peer with port", listenPort, "to peer with port", connectPort)
 				go startPeer(listenPort, connectPort, true)
-				break
+				/* break
 			} else {
 				time.Sleep(100 * time.Millisecond)
 			}
-		}
+		} */
 	}
 
 	startPeer(fmt.Sprintf("%d", startPort+amount-1), fmt.Sprintf("%d", basePort), false)
