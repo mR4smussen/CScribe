@@ -195,6 +195,13 @@ func (thisPeer *Peer) handleMessage(encoder *json.Encoder, message *Message) {
 		if senderPort != thisPeer.Port {
 			thisPeer.sendMessage(thisPeer.successor.IP+":"+thisPeer.successor.Port, "DrawRing", &senderPort, nil)
 		}
+	case "PrintChildren":
+		var senderPort string
+		json.Unmarshal(message.Data, &senderPort)
+		if senderPort != thisPeer.Port {
+			thisPeer.printChildren()
+			thisPeer.sendMessage(thisPeer.successor.IP+":"+thisPeer.successor.Port, "PrintChildren", &senderPort, nil)
+		}
 	case "NotifyPredLeave": // used by thisPeer's pred to notify that they leave the network
 		var leaveRpc LeaveRpc
 		json.Unmarshal(message.Data, &leaveRpc)
@@ -241,6 +248,7 @@ func (p *Peer) Menu() {
 		fmt.Println("5. Join group <root ip/group name>")
 		fmt.Println("6. Send multicast <group name> <message>")
 		fmt.Println("7. Draw ring")
+		fmt.Println("8. Count children")
 
 		args, _ := reader.ReadString('\n')
 		choice := strings.Split(args, " ")[0]
@@ -310,10 +318,51 @@ func (p *Peer) Menu() {
 			if p.successor.ID.Cmp(&p.ID) != 0 {
 				p.sendMessage(p.successor.IP+":"+p.successor.Port, "DrawRing", &p.Port, nil)
 			}
+		case "8":
+			p.printChildren()
+			if p.successor.ID.Cmp(&p.ID) != 0 {
+				p.sendMessage(p.successor.IP+":"+p.successor.Port, "PrintChildren", &p.Port, nil)
+			}
 
 		default:
 			fmt.Println("Invalid option, please try again.")
 		}
+	}
+}
+
+// Writes amount of children for all groups this peer is a member of
+func (p *Peer) printChildren() {
+	fmt.Println(p.Port, "printing children")
+	totalChildren := 0
+	for _, group := range p.groups {
+		totalChildren += len(group.children)
+		logFile := filepath.Join("..", "logs", group.gName+"_children.md")
+
+		file, err := os.OpenFile(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		if err != nil {
+			fmt.Println("was not able to open file", logFile)
+			continue
+		}
+		defer file.Close()
+
+		children := fmt.Sprintf("(%s):%d\n", p.Port, len(group.children))
+
+		if _, err := file.WriteString(children); err != nil {
+			fmt.Println("was not able to write to file", logFile)
+			continue
+		}
+	}
+	networkLogFile := filepath.Join("..", "logs", "network_children.md")
+	file, err := os.OpenFile(networkLogFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		fmt.Println("was not able to open file", networkLogFile)
+		return
+	}
+	defer file.Close()
+	totalChildrenString := fmt.Sprintf("(%s):%d\n", p.Port, totalChildren)
+	if _, err := file.WriteString(totalChildrenString); err != nil {
+		fmt.Println("was not able to write to file", networkLogFile)
+		return
 	}
 }
 
