@@ -11,6 +11,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -177,6 +178,11 @@ func (thisPeer *Peer) handleMessage(encoder *json.Encoder, message *Message) {
 		json.Unmarshal(message.Data, &rpc)
 		root := thisPeer.forwardJoin(rpc)
 		encoder.Encode(root)
+	case "AskToJoinGroup":
+		var domain string
+		json.Unmarshal(message.Data, &domain)
+		fmt.Println(thisPeer.Port, domain)
+		thisPeer.joinGroup(domain)
 	case "GetKey":
 		var rpc requestKeyRpc
 		json.Unmarshal(message.Data, &rpc)
@@ -249,6 +255,7 @@ func (p *Peer) Menu() {
 		fmt.Println("6. Send multicast <group name> <message>")
 		fmt.Println("7. Draw ring")
 		fmt.Println("8. Count children")
+		fmt.Println("9. Make peers join groups <from port> <to port> <group id>")
 
 		args, _ := reader.ReadString('\n')
 		choice := strings.Split(args, " ")[0]
@@ -322,6 +329,15 @@ func (p *Peer) Menu() {
 			p.printChildren()
 			if p.successor.ID.Cmp(&p.ID) != 0 {
 				p.sendMessage(p.successor.IP+":"+p.successor.Port, "PrintChildren", &p.Port, nil)
+			}
+		case "9":
+			fromPort, _ := strconv.Atoi(strings.Split(args, " ")[1])
+			toPort, _ := strconv.Atoi(strings.Split(args, " ")[2])
+			groupId := strings.TrimSpace(strings.Split(args, " ")[3])
+			for i := fromPort; i <= toPort; i++ {
+				p.sendMessage("localhost:"+strconv.FormatInt(int64(i), 10),
+					"AskToJoinGroup", &groupId, nil)
+				time.Sleep(time.Millisecond * 100)
 			}
 
 		default:
