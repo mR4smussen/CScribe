@@ -207,6 +207,8 @@ func (thisPeer *Peer) handleMessage(encoder *json.Encoder, message *Message) {
 		if senderPort != thisPeer.Port {
 			thisPeer.printChildren()
 			thisPeer.sendMessage(thisPeer.successor.IP+":"+thisPeer.successor.Port, "PrintChildren", &senderPort, nil)
+		} else {
+			findSDOfChildren()
 		}
 	case "NotifyPredLeave": // used by thisPeer's pred to notify that they leave the network
 		var leaveRpc LeaveRpc
@@ -326,6 +328,9 @@ func (p *Peer) Menu() {
 				p.sendMessage(p.successor.IP+":"+p.successor.Port, "DrawRing", &p.Port, nil)
 			}
 		case "8":
+			// first we clear the network_children file
+			logFile := filepath.Join("..", "logs", "network_children.md")
+			os.WriteFile(logFile, []byte(""), 0644)
 			p.printChildren()
 			if p.successor.ID.Cmp(&p.ID) != 0 {
 				p.sendMessage(p.successor.IP+":"+p.successor.Port, "PrintChildren", &p.Port, nil)
@@ -337,7 +342,7 @@ func (p *Peer) Menu() {
 			for i := fromPort; i <= toPort; i++ {
 				p.sendMessage("localhost:"+strconv.FormatInt(int64(i), 10),
 					"AskToJoinGroup", &groupId, nil)
-				time.Sleep(time.Millisecond * 100)
+				time.Sleep(time.Millisecond * 300)
 			}
 
 		default:
