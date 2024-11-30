@@ -8,7 +8,9 @@ https://dl.acm.org/doi/10.1145/964723.383071
 import (
 	"fmt"
 	"math/big"
+	"math/rand"
 	"os"
+	"time"
 )
 
 type Finger struct {
@@ -26,6 +28,11 @@ type Interval struct {
 type UpdateFingertableRpc struct {
 	Peer  Peer
 	Index int
+}
+
+type LeaveRpc struct {
+	Leaver        Peer
+	NewConnection Peer
 }
 
 // Ask node n to find id's successor
@@ -112,71 +119,92 @@ func (n *Peer) closest_preceding_finger(id big.Int) *Peer {
 // node n joins the network;
 // n' is an arbitrary node in the network
 func (n *Peer) join(nPrime *Peer) {
+	n.predecessor = nil
+	n.successor = n
 	if nPrime != nil {
-		n.init_finger_table(nPrime)
-		n.update_others()
+		// call for n'.find_successor(n)
+		successor := &Peer{}
+		n.sendMessage(nPrime.IP+":"+nPrime.Port, "FindSuccessor", &n.ID, successor)
+		n.successor = successor
+		n.fingerTable[0].peer = *n.successor
+
 		fmt.Println("Peer ("+n.Port+")", n.ID.String(), "Successfully joined the network.")
 		os.WriteFile("peer_lock.txt", []byte("open"), 0644)
 	}
+
+	// start periodic stabilize() and fix_fingers().
+	quitStabilize := make(chan struct{})
+	quitFixFingers := make(chan struct{})
+	go startPeriodicTask(n.stabilize, 1*time.Second, quitStabilize)
+	go startPeriodicTask(n.fix_fingers, 3*time.Second, quitFixFingers)
 }
 
-// initialize finger table of local node;
-// n' is an arbitrary node already in the network
-func (n *Peer) init_finger_table(nPrime *Peer) {
-	n.connMutex.Lock()
-	// call for finger[1].node = n'.find_successor(finger[1].start)
-	successor := &Peer{}
-	n.sendMessage(nPrime.IP+":"+nPrime.Port, "FindSuccessor",
-		&n.fingerTable[1].interval.iStart, successor)
-	n.fingerTable[0].peer = *successor
-	n.successor = successor
-	successorAddr := successor.IP + ":" + successor.Port
-
-	// call for predecessor = successor.predecessor
-	SuccPred := &Peer{}
-	n.sendMessage(successorAddr, "GetPredecessor", nil, SuccPred)
-	n.predecessor = SuccPred
-
-	// call for successor.predecessor = n
-	n.sendMessage(successorAddr, "SetPredecessor", n, nil)
-
-	for i := 0; i < HASH_SIZE-1; i++ {
-		nextFinger := n.fingerTable[i+1].start
-		if isBetweenLowerIncl(&nextFinger, &n.ID, &n.fingerTable[i].peer.ID) {
-			n.fingerTable[i+1].peer = n.fingerTable[i].peer
-		} else {
-			// Call for finger[i+1].node = n'.find_successor(finger[i+1].start)
-			findSuccResp := &Peer{}
-			n.sendMessage(nPrime.IP+":"+nPrime.Port, "FindSuccessor", &nextFinger, findSuccResp)
-			n.fingerTable[i+1].peer = *findSuccResp
+// periodically verify n's immediate successor,
+// and tell the successor about n.
+func (n *Peer) stabilize() {
+	// edge case: If n = n.successor then we don't need the remote call.
+	if n.ID.Cmp(&n.successor.ID) == 0 {
+		if n.predecessor != nil {
+			n.successor = n.predecessor
 		}
+		return
 	}
-	n.connMutex.Unlock()
+	// call to get successor.predecessor
+	// note: the paper will have the successor.predecessor stored locally... we don't
+	x := &Peer{}
+	succIP := n.successor.IP + ":" + n.successor.Port
+	n.sendMessage(succIP, "GetPredecessor", nil, x)
+	if isBetween(&x.ID, &n.ID, &n.successor.ID) && x.Port != "" {
+		n.successor = x
+	}
+	// call for successor.notify(n)
+	n.sendMessage(n.successor.IP+":"+n.successor.Port, "Notify", &n, nil)
 }
 
-// update all nodes whose finger
-// tables should refer to n
-func (n *Peer) update_others() {
-	// edge case 1: if find_pred(n - 2^{i-1}) = n
-	// -> no need to update n's finger table, so we skip it
-	for i := 0; i < HASH_SIZE; i++ {
-		// Set p = find_predecessor(n - 2^{2-1})
-		offset := new(big.Int).Exp(big.NewInt(2), big.NewInt(int64(i)), nil)
-		idMinusOffset := new(big.Int).Sub(&n.ID, offset)
-		idMinusOffset.Mod(idMinusOffset, new(big.Int).Exp(big.NewInt(2), big.NewInt(int64(HASH_SIZE)), nil))
-		p := n.find_predecessor(*idMinusOffset)
+// n' thinks it might be n's predecessor.
+func (n *Peer) notify(nPrime *Peer) {
+	if n.predecessor == nil || isBetween(&nPrime.ID, &n.predecessor.ID, &n.ID) {
+		fmt.Println(nPrime.Port, "told", n.Port, "that they are their predecessor.")
+		n.predecessor = nPrime
+	}
+}
 
-		// call for p.update_finger_table(n, i)
-		otherAddress := p.IP + ":" + p.Port
-		if n.IP+":"+n.Port == otherAddress {
-			// Edge case 1
-			continue
+// periodically refresh finger table entries.
+// Note this is not really the optimal way, hence we have change it a bit.
+// (the paper only uses this to argue correctness, not efficiency).
+func (n *Peer) fix_fingers() {
+	i := rand.Intn(HASH_SIZE)
+	n.fix_finger(i)
+}
+
+func (n *Peer) fix_finger(i int) {
+	succOfFingerI := *n.find_successor(n.fingerTable[i].start, n.successor)
+	n.fingerTable[i].peer = succOfFingerI
+	pickedIdx := i
+	// all fingers between finger[i].start and succOfFingerI should point to succOfFingerI.
+	for {
+		// next finger idx
+		i = (i + 1) % HASH_SIZE
+		if isBetween(&n.fingerTable[i].start, &succOfFingerI.ID, &n.fingerTable[pickedIdx].start) {
+			break
 		}
-		updateFingerTableRpc := UpdateFingertableRpc{
-			Peer:  *n,
-			Index: i,
+		n.fingerTable[i].peer = succOfFingerI
+	}
+}
+
+// General function to start a periodic task
+func startPeriodicTask(task func(), interval time.Duration, quit chan struct{}) {
+	ticker := time.NewTicker(interval)
+	defer close(quit)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			task()
+		case <-quit:
+			return
 		}
-		n.sendMessage(otherAddress, "UpdateFingertable", &updateFingerTableRpc, nil)
 	}
 }
 

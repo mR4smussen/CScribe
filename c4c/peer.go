@@ -10,6 +10,8 @@ import (
 	"math/big"
 	"net"
 	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -117,7 +119,7 @@ func (thisPeer *Peer) Listen() {
 	for {
 		conn, _ := listener.Accept()
 		// should this be a go routine?
-		thisPeer.handleConn(conn)
+		go thisPeer.handleConn(conn)
 	}
 }
 
@@ -163,6 +165,10 @@ func (thisPeer *Peer) handleMessage(encoder *json.Encoder, message *Message) {
 		json.Unmarshal(message.Data, &id)
 		successor := thisPeer.find_successor(id, thisPeer.successor)
 		encoder.Encode(successor)
+	case "Notify":
+		var nPrime Peer
+		json.Unmarshal(message.Data, &nPrime)
+		thisPeer.notify(&nPrime)
 	case "UpdateFingertable":
 		var rpc UpdateFingertableRpc
 		json.Unmarshal(message.Data, &rpc)
@@ -172,6 +178,11 @@ func (thisPeer *Peer) handleMessage(encoder *json.Encoder, message *Message) {
 		json.Unmarshal(message.Data, &rpc)
 		root := thisPeer.forwardJoin(rpc)
 		encoder.Encode(root)
+	case "AskToJoinGroup":
+		var domain string
+		json.Unmarshal(message.Data, &domain)
+		fmt.Println(thisPeer.Port, domain)
+		thisPeer.joinGroup(domain)
 	case "GetKey":
 		var rpc requestKeyRpc
 		json.Unmarshal(message.Data, &rpc)
@@ -183,6 +194,50 @@ func (thisPeer *Peer) handleMessage(encoder *json.Encoder, message *Message) {
 		var rpc multicastRpc
 		json.Unmarshal(message.Data, &rpc)
 		thisPeer.forwardMulticast(rpc)
+	case "DrawRing":
+		var senderPort string
+		json.Unmarshal(message.Data, &senderPort)
+		updateGraphLog(thisPeer.Port, thisPeer.successor.Port)
+		if senderPort != thisPeer.Port {
+			thisPeer.sendMessage(thisPeer.successor.IP+":"+thisPeer.successor.Port, "DrawRing", &senderPort, nil)
+		}
+	case "PrintChildren":
+		var senderPort string
+		json.Unmarshal(message.Data, &senderPort)
+		if senderPort != thisPeer.Port {
+			thisPeer.printChildren()
+			thisPeer.sendMessage(thisPeer.successor.IP+":"+thisPeer.successor.Port, "PrintChildren", &senderPort, nil)
+		} else {
+			findSDOfChildren()
+		}
+	case "NotifyPredLeave": // used by thisPeer's pred to notify that they leave the network
+		var leaveRpc LeaveRpc
+		json.Unmarshal(message.Data, &leaveRpc)
+		if leaveRpc.Leaver.ID.Cmp(&thisPeer.predecessor.ID) == 0 { // was send by our pred.
+			// set our new pred to be the old predecessors pred
+			fmt.Println(leaveRpc.Leaver.Port, "notified their succ:", thisPeer.Port, "that they are leaving")
+			thisPeer.predecessor = &leaveRpc.NewConnection
+		}
+	case "NotifySuccLeave": // used by thisPeer's succ to notify that they leave the network
+		var leaveRpc LeaveRpc
+		json.Unmarshal(message.Data, &leaveRpc)
+		if leaveRpc.Leaver.ID.Cmp(&thisPeer.successor.ID) == 0 { // was send by our succ.
+			fmt.Println(leaveRpc.Leaver.Port, "notified their pred:", thisPeer.Port, "that they are leaving")
+			// set our new succ to be the old successors succ
+			thisPeer.successor = &leaveRpc.NewConnection
+			// Update all fingers before the new succ to point to the new succ
+			idx := 0
+			for {
+				if isBetween(&thisPeer.fingerTable[idx].start, &leaveRpc.NewConnection.ID, &thisPeer.ID) {
+					break
+				}
+				thisPeer.fingerTable[idx].peer = leaveRpc.NewConnection
+				idx = idx + 1
+				if idx >= HASH_SIZE { // edge case: newConnection should fill up entire table
+					break
+				}
+			}
+		}
 	}
 }
 
@@ -199,7 +254,10 @@ func (p *Peer) Menu() {
 		fmt.Println("3. Exit")
 		fmt.Println("4. Create group <group name>")
 		fmt.Println("5. Join group <root ip/group name>")
-		fmt.Println("6. send multicast <group name> <message>")
+		fmt.Println("6. Send multicast <group name> <message>")
+		fmt.Println("7. Draw ring")
+		fmt.Println("8. Count children")
+		fmt.Println("9. Make peers join groups <from port> <to port> <group id>")
 
 		args, _ := reader.ReadString('\n')
 		choice := strings.Split(args, " ")[0]
@@ -214,6 +272,22 @@ func (p *Peer) Menu() {
 
 		case "3":
 			fmt.Println("Exiting...")
+			if p.successor != nil && p.successor.ID.Cmp(&p.ID) != 0 {
+				// notify pred about leave
+				leaveRpc := LeaveRpc{
+					Leaver:        *p,
+					NewConnection: *p.successor,
+				}
+				p.sendMessage(p.predecessor.IP+":"+p.predecessor.Port, "NotifySuccLeave", &leaveRpc, nil)
+			}
+			if p.predecessor != nil && p.predecessor.ID.Cmp(&p.ID) != 0 {
+				// notify succ about leave
+				leaveRpc := LeaveRpc{
+					Leaver:        *p,
+					NewConnection: *p.predecessor,
+				}
+				p.sendMessage(p.successor.IP+":"+p.successor.Port, "NotifyPredLeave", &leaveRpc, nil)
+			}
 			os.Exit(0)
 		case "4":
 			if len(strings.Split(args, " ")) < 2 {
@@ -245,10 +319,71 @@ func (p *Peer) Menu() {
 			msgSlice := strings.Split(args, " ")[2:]
 			msg := strings.Join(msgSlice, " ")
 			p.sendMulticast(gname, strings.TrimSpace(msg))
+		case "7":
+			logFile := filepath.Join("..", "logs", "network.md")
+			os.WriteFile(logFile,
+				[]byte(
+					fmt.Sprintf("```mermaid\ngraph BT;\n")), 0644)
+			if p.successor.ID.Cmp(&p.ID) != 0 {
+				p.sendMessage(p.successor.IP+":"+p.successor.Port, "DrawRing", &p.Port, nil)
+			}
+		case "8":
+			// first we clear the network_children file
+			logFile := filepath.Join("..", "logs", "network_children.md")
+			os.WriteFile(logFile, []byte(""), 0644)
+			p.printChildren()
+			if p.successor.ID.Cmp(&p.ID) != 0 {
+				p.sendMessage(p.successor.IP+":"+p.successor.Port, "PrintChildren", &p.Port, nil)
+			}
+		case "9":
+			fromPort, _ := strconv.Atoi(strings.Split(args, " ")[1])
+			toPort, _ := strconv.Atoi(strings.Split(args, " ")[2])
+			groupId := strings.TrimSpace(strings.Split(args, " ")[3])
+			for i := fromPort; i <= toPort; i++ {
+				p.sendMessage("localhost:"+strconv.FormatInt(int64(i), 10),
+					"AskToJoinGroup", &groupId, nil)
+				time.Sleep(time.Millisecond * 300)
+			}
 
 		default:
 			fmt.Println("Invalid option, please try again.")
 		}
+	}
+}
+
+// Writes amount of children for all groups this peer is a member of
+func (p *Peer) printChildren() {
+	fmt.Println(p.Port, "printing children")
+	totalChildren := 0
+	for _, group := range p.groups {
+		totalChildren += len(group.children)
+		logFile := filepath.Join("..", "logs", group.gName+"_children.md")
+
+		file, err := os.OpenFile(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		if err != nil {
+			fmt.Println("was not able to open file", logFile)
+			continue
+		}
+		defer file.Close()
+
+		children := fmt.Sprintf("(%s):%d\n", p.Port, len(group.children))
+
+		if _, err := file.WriteString(children); err != nil {
+			fmt.Println("was not able to write to file", logFile)
+			continue
+		}
+	}
+	networkLogFile := filepath.Join("..", "logs", "network_children.md")
+	file, err := os.OpenFile(networkLogFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		fmt.Println("was not able to open file", networkLogFile)
+		return
+	}
+	defer file.Close()
+	totalChildrenString := fmt.Sprintf("(%s):%d\n", p.Port, totalChildren)
+	if _, err := file.WriteString(totalChildrenString); err != nil {
+		fmt.Println("was not able to write to file", networkLogFile)
+		return
 	}
 }
 
@@ -290,7 +425,7 @@ func (thisPeer *Peer) GetConnection(otherAddr string) net.Conn {
 	for {
 		conn, err := net.Dial("tcp", otherAddr)
 		if err != nil && tries >= maxTries {
-			log.Printf("Error connecting to peer: %s %v", otherAddr, err)
+			log.Printf("Error connecting to peer: %s %v, updating all fingers with this peer in it...", otherAddr, err)
 			return nil
 		} else if err == nil {
 			if tries > 0 {
@@ -309,15 +444,18 @@ func startPeer(listenPort, connectPort string, isTest bool) {
 	go peer.Listen()
 
 	if connectPort != "0" {
+		// Get n'
 		connectAddr := "localhost:" + connectPort
-		connectPeer := &Peer{}
-		peer.sendMessage(connectAddr, "GetPeer", nil, connectPeer)
+		nPrime := &Peer{}
+		peer.sendMessage(connectAddr, "GetPeer", nil, nPrime)
 
-		// connect to the network through the connectPeer
+		// connect to the network through n'
 		if !isTest {
-			fmt.Println("Peer", peer.ID.String(), "is joining the network through", connectPeer.ID.String())
+			fmt.Println("Peer", peer.ID.String(), "is joining the network through", nPrime.ID.String())
 		}
-		peer.join(connectPeer)
+		peer.join(nPrime)
+	} else {
+		peer.join(nil)
 	}
 
 	if !isTest {

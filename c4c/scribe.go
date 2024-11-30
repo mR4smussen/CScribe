@@ -12,6 +12,7 @@ type Group struct {
 	children []*Peer
 	root     *Peer
 	groupKey []byte // the aes key and nonce used for this group
+	gName    string // only used for logging
 }
 
 type joinRpc struct {
@@ -42,6 +43,7 @@ func (n *Peer) create(name string) {
 			children: []*Peer{},
 			root:     n,
 			groupKey: groupKey,
+			gName:    name,
 		}
 		logFile := filepath.Join("..", "logs", name+"_log.md")
 
@@ -81,6 +83,7 @@ func (n *Peer) joinGroup(domain string) {
 				children: group.children,
 				root:     group.root,
 				groupKey: gKey,
+				gName:    ids[1],
 			}
 		} else {
 			fmt.Println("You are already part of this group.")
@@ -121,6 +124,7 @@ func (n *Peer) joinGroup(domain string) {
 			children: []*Peer{},
 			root:     root,
 			groupKey: gKey,
+			gName:    ids[1],
 		}
 		glog(ids[1], fmt.Sprintf("	%s((%s))-->%s((%s));",
 			n.Port, n.Port, bestFinger.Port, bestFinger.Port))
@@ -156,6 +160,7 @@ func (n *Peer) forwardJoin(rpc joinRpc) *Peer {
 				children: []*Peer{rpc.Forwarder},
 				root:     root,
 				groupKey: nil,
+				gName:    rpc.GroupName,
 			}
 			glog(rpc.GroupName, fmt.Sprintf("	%s((%s))-->%s((%s));",
 				n.Port, n.Port, bestFinger.Port, bestFinger.Port))
