@@ -4,9 +4,11 @@ import (
 	"bufio"
 	"crypto/sha1"
 	"fmt"
+	"math"
 	"math/big"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -146,4 +148,71 @@ func updateGraphLog(a, b string) error {
 	}
 
 	return nil
+}
+
+func findSDOfChildren() {
+	total := 0
+	amount := 0
+	networkChildrenFile := filepath.Join("..", "logs", "network_children.md")
+
+	// Open the file
+	file, err := os.Open(networkChildrenFile)
+	if err != nil {
+		fmt.Println("failed to open file: %w", err)
+		return
+	}
+	defer file.Close()
+
+	// Read all lines into a slice
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := scanner.Text()
+		children := strings.Split(line, ":")[1]
+		childrenInt, _ := strconv.Atoi(children)
+		total += childrenInt
+		amount++
+	}
+	if err := scanner.Err(); err != nil {
+		fmt.Errorf("failed to read file: %w", err)
+		return
+	}
+
+	// compute SD
+	mean := float64(total) / float64(amount)
+	sum := float64(0)
+
+	file2, err2 := os.Open(networkChildrenFile)
+	if err2 != nil {
+		fmt.Println("failed to open file: %w", err2)
+		return
+	}
+	defer file2.Close()
+
+	scanner2 := bufio.NewScanner(file2)
+	for scanner2.Scan() {
+		line := scanner2.Text()
+		children := strings.Split(line, ":")[1]
+		childrenInt, _ := strconv.Atoi(children)
+		sum += math.Pow(float64(childrenInt)-float64(mean), float64(2))
+	}
+	if err := scanner2.Err(); err != nil {
+		fmt.Errorf("failed to read file: %w", err)
+		return
+	}
+	SD := math.Sqrt(sum / float64(amount))
+
+	file, err = os.OpenFile(networkChildrenFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		fmt.Println("was not able to open file", networkChildrenFile)
+		return
+	}
+	defer file.Close()
+
+	sdString := fmt.Sprintf("Mean:%f\nSD:%f\n", mean, SD)
+
+	if _, err := file.WriteString(sdString); err != nil {
+		fmt.Println("was not able to write to file", networkChildrenFile)
+		return
+	}
+
 }
