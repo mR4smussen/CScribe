@@ -17,8 +17,8 @@ type Group struct {
 
 type joinRpc struct {
 	PeerId    big.Int // The id of the creater of the group
-	GroupId   big.Int // The ide of the group name
-	Forwarder *Peer   // The peer forwarding the message (to add to the branch)
+	GroupId   big.Int // The id of the group name
+	Forwarder *Peer   // The peer forwarding the message (to add to the tree)
 	Sender    *Peer   // The original sender of the message
 	GroupName string  // Just used for logging to the correct file
 }
@@ -50,7 +50,7 @@ func (n *Peer) create(name string) {
 		os.WriteFile(logFile,
 			[]byte(
 				fmt.Sprintf("### Peer (%s) created the group: %s\n```mermaid\ngraph BT;\n", n.Port, name)), 0644)
-		fmt.Println("Group \""+name+"\" created with id ", ID.String())
+		fmt.Println("\nGroup \"" + name + "\" created")
 	} else {
 		fmt.Println("Group \""+name+"\" already exists with id ", ID.String())
 	}
@@ -70,7 +70,6 @@ func (n *Peer) joinGroup(domain string) {
 	group := n.groups[groupId.String()]
 	if group != nil {
 		if group.groupKey == nil {
-			fmt.Println("You are already part of the tree, but asking for the group key now.")
 			// Use the root to get the symmetric group key
 			requestRpc := requestKeyRpc{
 				GroupId:   *hashString(ids[1]),
@@ -91,15 +90,12 @@ func (n *Peer) joinGroup(domain string) {
 		return
 	}
 
-	fmt.Println("Trying to connect to group", groupId.String(),
-		"created by peer", peerId.String())
-
 	bestFinger := n.bestFingerForLookup(peerId)
 	if bestFinger.ID.Cmp(&n.ID) == 0 {
-		// If n is the best peer for this lookup, then something is wrong
-		// since n doesn't know about the group
-		fmt.Println("Seems you are the root, and have lost the group :(")
-	} else { // Else we send a join message to the "best" finger.
+		// If n is the best peer for this lookup and n doesn't know about the group, then something is wrong
+		fmt.Println("Chord was not able to find the root of the group.")
+		fmt.Println("Wait for the network to stabilize before trying again.")
+	} else {
 		// join the group tree (get the root)
 		joinRpc := joinRpc{
 			PeerId:    *peerId,
@@ -108,7 +104,6 @@ func (n *Peer) joinGroup(domain string) {
 			Sender:    n,
 			GroupName: ids[1],
 		}
-		fmt.Println("Trying to join group through", bestFinger.Port)
 		root := &Peer{}
 		n.sendMessage(bestFinger.IP+":"+bestFinger.Port, "JoinGroup", &joinRpc, root)
 
@@ -128,7 +123,7 @@ func (n *Peer) joinGroup(domain string) {
 		}
 		glog(ids[1], fmt.Sprintf("	%s((%s))-->%s((%s));",
 			n.Port, n.Port, bestFinger.Port, bestFinger.Port))
-		fmt.Println("successfully joined new group with root on port", n.groups[groupId.String()].root.Port)
+		fmt.Println("\nsuccessfully joined group", n.groups[groupId.String()].gName)
 	}
 }
 
@@ -136,14 +131,13 @@ func (n *Peer) joinGroup(domain string) {
 // This method is called when receiving a join message
 func (n *Peer) forwardJoin(rpc joinRpc) *Peer {
 	groupId := rpc.GroupId.String()
-	// If we don't forward all message, then we need each party in the tree to keep track of who the current root of the tree is
-	// this is probably best, since this is what the pseudo code does...
 	if n.groups[groupId] == nil { // Route the message foward
 		bestFinger := n.bestFingerForLookup(&rpc.PeerId)
 		if bestFinger.ID.Cmp(&n.ID) == 0 {
-			fmt.Println("The root doesn't seem to know about the group...")
+			fmt.Println("Chord was not able to find the root of the group.")
+			fmt.Println("Wait for the network to stabilize before trying again.")
 			return nil
-		} else { // Forward join to best finger
+		} else { // Forward the join message to the best finger
 			nextRpc := joinRpc{
 				PeerId:    rpc.PeerId,
 				GroupId:   rpc.GroupId,
@@ -173,11 +167,11 @@ func (n *Peer) forwardJoin(rpc joinRpc) *Peer {
 		newChildrenList := append(existingGroup.children, rpc.Forwarder)
 		existingGroup.children = newChildrenList
 		n.groups[groupId] = existingGroup
-		fmt.Println("Already part of the tree, returning the root...", n.groups[groupId].root.Port)
 		return n.groups[groupId].root
 	}
 }
 
+// Send a message to the root of the group, who will then parse it down the tree.
 func (n *Peer) sendMulticast(gname, msg string) {
 	groupId := hashString(gname)
 	group := n.groups[groupId.String()]
@@ -193,13 +187,13 @@ func (n *Peer) sendMulticast(gname, msg string) {
 		Sender:           n,
 	}
 	if root.ID.Cmp(&n.ID) == 0 {
-		// the root is sending the multicast.
 		n.forwardMulticast(rpc)
-	} else { // we ask the root to send the multicast
+	} else {
 		n.sendMessage(root.IP+":"+root.Port, "Multicast", &rpc, nil)
 	}
 }
 
+// Forwards a multicast message parsed down from the parent
 func (n *Peer) forwardMulticast(rpc multicastRpc) {
 	groupId := hashString(rpc.GroupName)
 	group := n.groups[groupId.String()]
@@ -208,7 +202,7 @@ func (n *Peer) forwardMulticast(rpc multicastRpc) {
 	// If n is in the group (has the group key) - log the message
 	if group.groupKey != nil {
 		decryptedMessage := decryptAES(rpc.EncryptedMessage, group.groupKey)
-		logMsg := fmt.Sprintf("(%s:%s): \"%s\" - %s", n.Port, rpc.GroupName, decryptedMessage, rpc.Sender.Port)
+		logMsg := fmt.Sprintf("\n(%s:%s): \"%s\"", rpc.Sender.Port, rpc.GroupName, decryptedMessage)
 		fmt.Println(logMsg)
 	}
 	for _, child := range children {

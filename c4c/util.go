@@ -216,3 +216,26 @@ func findSDOfChildren() {
 	}
 
 }
+
+// Boot multiple peers at the same time
+func bootPeers(amountString, firstPort string) {
+	amount, err := strconv.Atoi(amountString)
+	if err != nil {
+		panic("when running tests the second argument should be a number")
+	}
+	fmt.Println("Booting", amount, "peers")
+
+	basePort := 8000
+	startPort, _ := strconv.Atoi(firstPort)
+
+	for i := 1; i <= amount-1; i++ {
+		time.Sleep(500 * time.Millisecond)
+		listenPort := fmt.Sprintf("%d", startPort+i-1)
+		connectPort := fmt.Sprintf("%d", basePort)
+		go startPeer(listenPort, connectPort, true)
+	}
+
+	startPeer(fmt.Sprintf("%d", startPort+amount-1), fmt.Sprintf("%d", basePort), false)
+
+	select {}
+}
