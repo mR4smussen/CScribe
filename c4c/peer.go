@@ -10,7 +10,6 @@ import (
 	"math/big"
 	"net"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -34,14 +33,13 @@ type Peer struct {
 }
 
 // Struct for a message
-type Message struct {
+type MessageRpc struct {
 	Type string
 	Data []byte
 }
 
 // Initializes a new peer
 func NewPeer(IP, Port string) *Peer {
-	// Compute the unique ID for the IP address
 	hash := sha1.New()
 	hash.Write([]byte(IP + ":" + Port))
 	hashBytes := hash.Sum(nil)
@@ -65,7 +63,7 @@ func NewPeer(IP, Port string) *Peer {
 	return &peer
 }
 
-// Make new finger table from id
+// Make a new finger table from the id of a peer
 func (thisPeer *Peer) initializeFingerTable(id *big.Int) []Finger {
 	fingerTable := make([]Finger, HASH_SIZE)
 
@@ -92,12 +90,12 @@ func (thisPeer *Peer) initializeFingerTable(id *big.Int) []Finger {
 	return fingerTable
 }
 
-// Helper function to compute decimal(id) + 2^(i-1)
+// Helper function to compute id + 2^(i-1)
 func computeStart(decimalID *big.Int, i int) *big.Int {
-	// Calculate 2^(i-1)
+	// Compute 2^(i-1)
 	intervalSize := new(big.Int).Exp(big.NewInt(2), big.NewInt(int64(i-1)), nil)
 
-	// Add decimal(id) + 2^(i-1)
+	// Compute id + 2^(i-1)
 	result := new(big.Int).Add(decimalID, intervalSize)
 
 	// Mod 2^HASH_SIZE
@@ -118,7 +116,6 @@ func (thisPeer *Peer) Listen() {
 
 	for {
 		conn, _ := listener.Accept()
-		// should this be a go routine?
 		go thisPeer.handleConn(conn)
 	}
 }
@@ -126,7 +123,7 @@ func (thisPeer *Peer) Listen() {
 func (thisPeer *Peer) handleConn(conn net.Conn) {
 	encoder := json.NewEncoder(conn)
 	decoder := json.NewDecoder(conn)
-	var message Message
+	var message MessageRpc
 	err := decoder.Decode(&message)
 	if err != nil {
 		conn.Close()
@@ -136,7 +133,7 @@ func (thisPeer *Peer) handleConn(conn net.Conn) {
 	conn.Close()
 }
 
-func (thisPeer *Peer) handleMessage(encoder *json.Encoder, message *Message) {
+func (thisPeer *Peer) handleMessage(encoder *json.Encoder, message *MessageRpc) {
 	switch message.Type {
 	case "GetPeer":
 		encoder.Encode(thisPeer)
@@ -186,7 +183,6 @@ func (thisPeer *Peer) handleMessage(encoder *json.Encoder, message *Message) {
 	case "GetKey":
 		var rpc requestKeyRpc
 		json.Unmarshal(message.Data, &rpc)
-		fmt.Println("got key request", rpc)
 		gKey := thisPeer.groups[rpc.GroupId.String()].groupKey
 		encryptedGroupKey := encryptRSA(gKey, rpc.Requestee.Pk)
 		encoder.Encode(encryptedGroupKey)
@@ -194,35 +190,19 @@ func (thisPeer *Peer) handleMessage(encoder *json.Encoder, message *Message) {
 		var rpc multicastRpc
 		json.Unmarshal(message.Data, &rpc)
 		thisPeer.forwardMulticast(rpc)
-	case "DrawRing":
-		var senderPort string
-		json.Unmarshal(message.Data, &senderPort)
-		updateGraphLog(thisPeer.Port, thisPeer.successor.Port)
-		if senderPort != thisPeer.Port {
-			thisPeer.sendMessage(thisPeer.successor.IP+":"+thisPeer.successor.Port, "DrawRing", &senderPort, nil)
-		}
-	case "PrintChildren":
-		var senderPort string
-		json.Unmarshal(message.Data, &senderPort)
-		if senderPort != thisPeer.Port {
-			thisPeer.printChildren()
-			thisPeer.sendMessage(thisPeer.successor.IP+":"+thisPeer.successor.Port, "PrintChildren", &senderPort, nil)
-		} else {
-			findSDOfChildren()
-		}
 	case "NotifyPredLeave": // used by thisPeer's pred to notify that they leave the network
 		var leaveRpc LeaveRpc
 		json.Unmarshal(message.Data, &leaveRpc)
-		if leaveRpc.Leaver.ID.Cmp(&thisPeer.predecessor.ID) == 0 { // was send by our pred.
-			// set our new pred to be the old predecessors pred
-			fmt.Println(leaveRpc.Leaver.Port, "notified their succ:", thisPeer.Port, "that they are leaving")
+		// make sure the message was send by our pred.
+		if leaveRpc.Leaver.ID.Cmp(&thisPeer.predecessor.ID) == 0 {
+			// set our pred to be the old predecessors pred
 			thisPeer.predecessor = &leaveRpc.NewConnection
 		}
 	case "NotifySuccLeave": // used by thisPeer's succ to notify that they leave the network
 		var leaveRpc LeaveRpc
 		json.Unmarshal(message.Data, &leaveRpc)
-		if leaveRpc.Leaver.ID.Cmp(&thisPeer.successor.ID) == 0 { // was send by our succ.
-			fmt.Println(leaveRpc.Leaver.Port, "notified their pred:", thisPeer.Port, "that they are leaving")
+		// makre sure the message was send by our succ.
+		if leaveRpc.Leaver.ID.Cmp(&thisPeer.successor.ID) == 0 {
 			// set our new succ to be the old successors succ
 			thisPeer.successor = &leaveRpc.NewConnection
 			// Update all fingers before the new succ to point to the new succ
@@ -246,18 +226,12 @@ func (p *Peer) Menu() {
 	reader := bufio.NewReader(os.Stdin)
 	for {
 		fmt.Println("\n##################################")
-		fmt.Println("####### Welcome to Schorbe #######")
+		fmt.Println("####### Welcome to CScribe #######")
 		fmt.Println("##################################")
-		fmt.Println("Choose an option: ")
-		fmt.Println("1. Print fingertable")
-		fmt.Println("2. Print fingertable loud")
-		fmt.Println("3. Exit")
-		fmt.Println("4. Create group <group name>")
-		fmt.Println("5. Join group <root ip/group name>")
-		fmt.Println("6. Send multicast <group name> <message>")
-		fmt.Println("7. Draw ring")
-		fmt.Println("8. Count children")
-		fmt.Println("9. Make peers join groups <from port> <to port> <group id>")
+		fmt.Println("1. Create group <group name>")
+		fmt.Println("2. Join group <root ip/group name>")
+		fmt.Println("3. Send multicast <group name> <message>")
+		fmt.Println("4. Leave network")
 
 		args, _ := reader.ReadString('\n')
 		choice := strings.Split(args, " ")[0]
@@ -265,13 +239,37 @@ func (p *Peer) Menu() {
 
 		switch choice {
 		case "1":
-			printFingertable(p.fingerTable)
-
+			if len(strings.Split(args, " ")) < 2 {
+				fmt.Println("make sure to include a name for the group.")
+				fmt.Println("For instance \"4 foo\"")
+				continue
+			}
+			name := strings.Split(args, " ")[1]
+			p.create(strings.TrimSpace(name))
 		case "2":
-			printFingertableLoud(p.fingerTable)
-
+			if len(strings.Split(args, " ")) < 2 {
+				fmt.Println("make sure to include the adrress of the root peer and name of the group.")
+				fmt.Println("For instance \"5 localhost:xxxx/foo\".")
+				continue
+			}
+			ids := strings.Split(args, " ")[1]
+			if len(strings.Split(ids, "/")) < 2 {
+				fmt.Println("the <addr>/<group name> should have the form:\n localhost:xxxx/foo")
+				continue
+			}
+			p.joinGroup(strings.TrimSpace(ids))
 		case "3":
-			fmt.Println("Exiting...")
+			if len(strings.Split(args, " ")) < 3 {
+				fmt.Println("make sure to include a group name and msg for the multicast.")
+				fmt.Println("For instance: 6 golf hello world")
+				continue
+			}
+			gname := strings.Split(args, " ")[1]
+			msgSlice := strings.Split(args, " ")[2:]
+			msg := strings.Join(msgSlice, " ")
+			p.sendMulticast(gname, strings.TrimSpace(msg))
+		case "4":
+			fmt.Println("Leaving network...")
 			if p.successor != nil && p.successor.ID.Cmp(&p.ID) != 0 {
 				// notify pred about leave
 				leaveRpc := LeaveRpc{
@@ -288,54 +286,9 @@ func (p *Peer) Menu() {
 				}
 				p.sendMessage(p.successor.IP+":"+p.successor.Port, "NotifyPredLeave", &leaveRpc, nil)
 			}
+			fmt.Println("Successfully left the network.")
 			os.Exit(0)
-		case "4":
-			if len(strings.Split(args, " ")) < 2 {
-				fmt.Println("make sure to include a name for the group.")
-				fmt.Println("For instance \"4 foo\"")
-				continue
-			}
-			name := strings.Split(args, " ")[1]
-			p.create(strings.TrimSpace(name))
 		case "5":
-			if len(strings.Split(args, " ")) < 2 {
-				fmt.Println("make sure to include the adrress of the root peer and name of the group.")
-				fmt.Println("For instance \"5 localhost:xxxx/foo\".")
-				continue
-			}
-			ids := strings.Split(args, " ")[1]
-			if len(strings.Split(ids, "/")) < 2 {
-				fmt.Println("the <addr>/<group name> should have the form:\n localhost:xxxx/foo")
-				continue
-			}
-			p.joinGroup(strings.TrimSpace(ids))
-		case "6":
-			if len(strings.Split(args, " ")) < 3 {
-				fmt.Println("make sure to include a group name and msg for the multicast.")
-				fmt.Println("For instance: 6 golf hello golf members")
-				continue
-			}
-			gname := strings.Split(args, " ")[1]
-			msgSlice := strings.Split(args, " ")[2:]
-			msg := strings.Join(msgSlice, " ")
-			p.sendMulticast(gname, strings.TrimSpace(msg))
-		case "7":
-			logFile := filepath.Join("..", "logs", "network.md")
-			os.WriteFile(logFile,
-				[]byte(
-					fmt.Sprintf("```mermaid\ngraph BT;\n")), 0644)
-			if p.successor.ID.Cmp(&p.ID) != 0 {
-				p.sendMessage(p.successor.IP+":"+p.successor.Port, "DrawRing", &p.Port, nil)
-			}
-		case "8":
-			// first we clear the network_children file
-			logFile := filepath.Join("..", "logs", "network_children.md")
-			os.WriteFile(logFile, []byte(""), 0644)
-			p.printChildren()
-			if p.successor.ID.Cmp(&p.ID) != 0 {
-				p.sendMessage(p.successor.IP+":"+p.successor.Port, "PrintChildren", &p.Port, nil)
-			}
-		case "9":
 			fromPort, _ := strconv.Atoi(strings.Split(args, " ")[1])
 			toPort, _ := strconv.Atoi(strings.Split(args, " ")[2])
 			groupId := strings.TrimSpace(strings.Split(args, " ")[3])
@@ -351,51 +304,18 @@ func (p *Peer) Menu() {
 	}
 }
 
-// Writes amount of children for all groups this peer is a member of
-func (p *Peer) printChildren() {
-	fmt.Println(p.Port, "printing children")
-	totalChildren := 0
-	for _, group := range p.groups {
-		totalChildren += len(group.children)
-		logFile := filepath.Join("..", "logs", group.gName+"_children.md")
-
-		file, err := os.OpenFile(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-		if err != nil {
-			fmt.Println("was not able to open file", logFile)
-			continue
-		}
-		defer file.Close()
-
-		children := fmt.Sprintf("(%s):%d\n", p.Port, len(group.children))
-
-		if _, err := file.WriteString(children); err != nil {
-			fmt.Println("was not able to write to file", logFile)
-			continue
-		}
-	}
-	networkLogFile := filepath.Join("..", "logs", "network_children.md")
-	file, err := os.OpenFile(networkLogFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		fmt.Println("was not able to open file", networkLogFile)
-		return
-	}
-	defer file.Close()
-	totalChildrenString := fmt.Sprintf("(%s):%d\n", p.Port, totalChildren)
-	if _, err := file.WriteString(totalChildrenString); err != nil {
-		fmt.Println("was not able to write to file", networkLogFile)
-		return
-	}
-}
-
-// Makes a new message with a given type
-func newMessage(Type string) *Message {
-	message := new(Message)
+// Message constructor
+func newMessage(Type string) *MessageRpc {
+	message := new(MessageRpc)
 	message.Type = Type
 	message.Data = []byte{}
 	return message
 }
 
 // Sends a message to the given IP
+// `data` should be a pointer to the rpc to send
+// `response` should be a pointer for a potential value
+// both can be null if the message type does not need data og a return value.
 func (thisPeer *Peer) sendMessage(ip string, msgType string, data interface{}, response interface{}) {
 	conn := thisPeer.GetConnection(ip)
 	if conn == nil {
@@ -448,11 +368,6 @@ func startPeer(listenPort, connectPort string, isTest bool) {
 		connectAddr := "localhost:" + connectPort
 		nPrime := &Peer{}
 		peer.sendMessage(connectAddr, "GetPeer", nil, nPrime)
-
-		// connect to the network through n'
-		if !isTest {
-			fmt.Println("Peer", peer.ID.String(), "is joining the network through", nPrime.ID.String())
-		}
 		peer.join(nPrime)
 	} else {
 		peer.join(nil)
@@ -471,12 +386,19 @@ func main() {
 		fmt.Println("To create a new network, use \"0\" as the [connect_port].")
 		os.Exit(1)
 	}
+
+	// Create the log file if it doesn't exist.
+	folderPath := "../logs"
+	if _, err := os.Stat(folderPath); os.IsNotExist(err) {
+		os.Mkdir(folderPath, 0755)
+	}
+
 	if os.Args[1] == "test" {
 		if len(os.Args) == 3 {
 			fmt.Println("To run the tests, use: go run . test <amount> <firstPort>")
 			os.Exit(1)
 		}
-		test(os.Args[2], os.Args[3])
+		bootPeers(os.Args[2], os.Args[3])
 		return
 	}
 

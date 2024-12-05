@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"math/big"
 	"math/rand"
-	"os"
 	"time"
 )
 
@@ -128,8 +127,8 @@ func (n *Peer) join(nPrime *Peer) {
 		n.successor = successor
 		n.fingerTable[0].peer = *n.successor
 
-		fmt.Println("Peer ("+n.Port+")", n.ID.String(), "Successfully joined the network.")
-		os.WriteFile("peer_lock.txt", []byte("open"), 0644)
+		fmt.Println("Peer ("+n.Port+")", "successfully joined the network.")
+		// os.WriteFile("peer_lock.txt", []byte("open"), 0644)
 	}
 
 	// start periodic stabilize() and fix_fingers().
@@ -149,8 +148,8 @@ func (n *Peer) stabilize() {
 		}
 		return
 	}
+
 	// call to get successor.predecessor
-	// note: the paper will have the successor.predecessor stored locally... we don't
 	x := &Peer{}
 	succIP := n.successor.IP + ":" + n.successor.Port
 	n.sendMessage(succIP, "GetPredecessor", nil, x)
@@ -164,7 +163,6 @@ func (n *Peer) stabilize() {
 // n' thinks it might be n's predecessor.
 func (n *Peer) notify(nPrime *Peer) {
 	if n.predecessor == nil || isBetween(&nPrime.ID, &n.predecessor.ID, &n.ID) {
-		fmt.Println(nPrime.Port, "told", n.Port, "that they are their predecessor.")
 		n.predecessor = nPrime
 	}
 }
