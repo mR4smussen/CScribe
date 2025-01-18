@@ -5,7 +5,7 @@ A Scribe multicast P2P network build on top of Chord.
 ## Use:
 **Download the project:**
 ```bash
-git clone https://gitlab.au.dk/iot-golf/chord4convos.git
+git clone https://github.com/mR4smussen/CScribe.git
 cd chord4convos
 ```
 
@@ -23,3 +23,7 @@ go run . 8001 8000
 ```bash
 go run . test 50 8001
 ```
+
+**Missing features**
+
+The main feature not implemented is stabilization of the scribe tress doing fails or leaves. This feature is part of the original scribe paper, and can be implemented from their.
