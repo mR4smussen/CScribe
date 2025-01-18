@@ -6,7 +6,7 @@ A Scribe multicast P2P network build on top of Chord.
 **Download the project:**
 ```bash
 git clone https://github.com/mR4smussen/CScribe.git
-cd chord4convos
+cd CScribe
 ```
 
 **Bootstrap the network:** Run a peer on any port (here 8000) and with the connection port being `0`.
